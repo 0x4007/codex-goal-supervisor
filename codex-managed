@@ -53,7 +53,7 @@ tmux set-window-option -t "$codex_managed_session:0" remain-on-exit on
 tmux set-option -t "$codex_managed_session" status on
 tmux set-option -t "$codex_managed_session" mouse on
 tmux set-option -t "$codex_managed_session" history-limit 20000
-tmux set-option -t "$codex_managed_session" status-left ' on 5xx => /goal resume '
+tmux set-option -t "$codex_managed_session" status-left ' on 5xx ➜ /goal resume '
 tmux set-option -t "$codex_managed_session" status-left-length 24
 
 printf -v codex_managed_command '%q ' \
