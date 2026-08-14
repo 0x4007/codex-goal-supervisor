@@ -2,6 +2,12 @@
 set -Eeuo pipefail
 
 codex_managed_binary="$HOME/.local/bin/codex"
+codex_managed_new=0
+
+if [ "${1:-}" = "--new" ]; then
+  codex_managed_new=1
+  shift
+fi
 
 if [ ! -x "$codex_managed_binary" ]; then
   printf 'codex-managed: Codex binary not found: %s\n' "$codex_managed_binary" >&2
@@ -28,7 +34,11 @@ else
   codex_managed_key=$(printf '%s' "$codex_managed_cwd" | cksum | cut -d' ' -f1)
 fi
 codex_managed_key=${codex_managed_key//[^[:alnum:]_.-]/-}
-codex_managed_session="codex-${codex_managed_key}"
+if [ "$codex_managed_new" = "1" ]; then
+  codex_managed_session="codex-new-$(date +%s)-$$"
+else
+  codex_managed_session="codex-${codex_managed_key}"
+fi
 
 codex_managed_created=0
 if ! tmux has-session -t "=$codex_managed_session" 2>/dev/null; then

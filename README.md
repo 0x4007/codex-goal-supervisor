@@ -23,11 +23,13 @@ Start or resume Codex normally through the harness:
 
 ```bash
 codex-managed
+codex-managed --new
 codex-managed resume SESSION_ID
 ```
 
-Resume commands use a stable tmux session named `codex-resume-SESSION_ID`. New
-sessions use a stable name derived from the working directory. The tmux status
+`codex-managed --new` always starts a fresh tmux session. Resume commands use a
+stable tmux session named `codex-resume-SESSION_ID`. Normal new sessions use a
+stable name derived from the working directory. The tmux status
 bar says `supervised session`. The pane stays available after a normal exit.
 The pane supervisor catches SIGHUP and SIGTERM and retries Codex after signal
 exit statuses 129, 137, and 143.
