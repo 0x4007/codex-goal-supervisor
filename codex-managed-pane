@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+codex_managed_cwd=${1:?missing working directory}
+shift
+cd "$codex_managed_cwd" || exit 72
+
+codex_managed_signal_status=0
+trap 'codex_managed_signal_status=129' HUP
+trap 'codex_managed_signal_status=143' TERM
+
+while true; do
+  codex_managed_signal_status=0
+  "$HOME/.local/bin/codex" "$@"
+  codex_managed_status=$?
+
+  if [ "$codex_managed_signal_status" -ne 0 ]; then
+    codex_managed_status=$codex_managed_signal_status
+  fi
+
+  case "$codex_managed_status" in
+    129|137|143)
+      printf '\n[supervised session] Codex was interrupted with status %s; restarting.\n' \
+        "$codex_managed_status"
+      sleep 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+printf '\n[supervised session] Codex exited with status %s.\n' "$codex_managed_status"
+printf '[supervised session] Re-run codex-managed with the same arguments to resume here.\n'
+exit "$codex_managed_status"

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+codex_managed_binary="$HOME/.local/bin/codex"
+
+if [ ! -x "$codex_managed_binary" ]; then
+  printf 'codex-managed: Codex binary not found: %s\n' "$codex_managed_binary" >&2
+  exit 127
+fi
+
+# Do not nest tmux or wrap noninteractive Codex execution.
+if [ -n "${TMUX:-}" ] || [ ! -t 0 ] || [ ! -t 1 ] || [ "${1:-}" = "exec" ]; then
+  exec "$codex_managed_binary" "$@"
+fi
+
+if ! command -v tmux >/dev/null 2>&1; then
+  exec "$codex_managed_binary" "$@"
+fi
+
+codex_managed_cwd=$PWD
+if [ "${1:-}" = "resume" ] && [ -n "${2:-}" ]; then
+  codex_managed_key="resume-${2}"
+elif command -v sha256sum >/dev/null 2>&1; then
+  codex_managed_key=$(printf '%s' "$codex_managed_cwd" | sha256sum | cut -c1-12)
+elif command -v shasum >/dev/null 2>&1; then
+  codex_managed_key=$(printf '%s' "$codex_managed_cwd" | shasum -a 256 | cut -c1-12)
+else
+  codex_managed_key=$(printf '%s' "$codex_managed_cwd" | cksum | cut -d' ' -f1)
+fi
+codex_managed_key=${codex_managed_key//[^[:alnum:]_.-]/-}
+codex_managed_session="codex-${codex_managed_key}"
+
+codex_managed_created=0
+if ! tmux has-session -t "=$codex_managed_session" 2>/dev/null; then
+  if tmux new-session -d -s "$codex_managed_session" -c "$codex_managed_cwd"; then
+    codex_managed_created=1
+  else
+    tmux has-session -t "=$codex_managed_session" 2>/dev/null || exit 1
+  fi
+fi
+
+tmux set-window-option -t "$codex_managed_session:0" remain-on-exit on
+tmux set-option -t "$codex_managed_session" status on
+tmux set-option -t "$codex_managed_session" status-left ' supervised session '
+tmux set-option -t "$codex_managed_session" status-left-length 24
+
+printf -v codex_managed_command '%q ' \
+  "$HOME/.local/bin/codex-managed-pane" "$codex_managed_cwd" "$@"
+
+if [ "$codex_managed_created" = "1" ]; then
+  tmux respawn-pane -k -t "$codex_managed_session:0.0" -c "$codex_managed_cwd" \
+    "$codex_managed_command"
+fi
+
+codex_managed_dead=$(tmux display-message -p -t "$codex_managed_session:0.0" '#{pane_dead}')
+if [ "$codex_managed_dead" = "1" ]; then
+  tmux respawn-pane -k -t "$codex_managed_session:0.0" -c "$codex_managed_cwd" \
+    "$codex_managed_command"
+fi
+
+exec tmux attach-session -t "=$codex_managed_session"

@@ -1,5 +1,52 @@
 # Codex goal 5xx supervisor
 
+## Managed interactive sessions
+
+`codex-managed` keeps an interactive Codex session inside tmux. An SSH
+disconnect detaches the client but leaves Codex running. Repeating the same
+command attaches to the same session, and a dead pane is respawned with the
+same command.
+
+Install the harness beside the Codex executable:
+
+```bash
+mkdir -p "$HOME/.local/bin"
+install -m 0755 codex-managed "$HOME/.local/bin/codex-managed"
+install -m 0755 codex-managed-pane "$HOME/.local/bin/codex-managed-pane"
+```
+
+The harness expects the Codex executable at `$HOME/.local/bin/codex` and tmux
+on `PATH`. If tmux is unavailable, it runs Codex directly. It also bypasses
+tmux for `codex exec` and whenever standard input or output is not a terminal.
+
+Start or resume Codex normally through the harness:
+
+```bash
+codex-managed
+codex-managed resume SESSION_ID
+```
+
+Resume commands use a stable tmux session named `codex-resume-SESSION_ID`. New
+sessions use a stable name derived from the working directory. The tmux status
+bar says `supervised session`. The pane stays available after a normal exit.
+The pane supervisor catches SIGHUP and SIGTERM and retries Codex after signal
+exit statuses 129, 137, and 143.
+Run the same `codex-managed` command again to reattach or respawn a dead pane.
+You do not need to detach tmux manually before closing SSH.
+
+This is a best-effort persistence harness, not a security boundary. It cannot
+prevent the same user from killing the tmux server, deleting the session, using
+SIGKILL, or terminating other Codex processes.
+
+To route interactive `codex` commands through the harness, add this function to
+the host's shell startup file:
+
+```bash
+function codex {
+  command "$HOME/.local/bin/codex-managed" "$@"
+}
+```
+
 ## Elevator pitch
 
 Automatically recover Codex goals stopped by a transient provider 5xx error.
