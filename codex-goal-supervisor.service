@@ -1,0 +1,17 @@
+[Unit]
+Description=Retry all Codex goal threads after provider 5xx errors
+
+[Service]
+Type=simple
+# Install the checkout at %h/.local/share/codex-goal-supervisor, or adjust
+# these two repository-relative paths in a local drop-in before enabling it.
+WorkingDirectory=%h/.local/share/codex-goal-supervisor
+ExecStart=/usr/bin/python3 %h/.local/share/codex-goal-supervisor/codex_goal_supervisor.py --interval 60
+Environment=HOME=%h
+Environment=CODEX_HOME=%h/.codex
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=10s
+# Never kill resume children or an app-server shared with an interactive user.
+KillMode=process
+TimeoutStopSec=15s

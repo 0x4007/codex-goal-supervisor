@@ -1,0 +1,5 @@
+__pycache__/
+.simulation/
+.supervisor-state/
+*.log
+*.pyc
