@@ -32,7 +32,9 @@ bar says `supervised session`. The pane stays available after a normal exit.
 The pane supervisor catches SIGHUP and SIGTERM and retries Codex after signal
 exit statuses 129, 137, and 143.
 Run the same `codex-managed` command again to reattach or respawn a dead pane.
-You do not need to detach tmux manually before closing SSH.
+A normal Codex exit removes its dead pane, so it returns to a usable shell
+instead of leaving a `Pane is dead` screen. You do not need to detach tmux
+manually before closing SSH.
 
 This is a best-effort persistence harness, not a security boundary. It cannot
 prevent the same user from killing the tmux server, deleting the session, using

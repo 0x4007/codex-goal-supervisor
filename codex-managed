@@ -58,4 +58,13 @@ if [ "$codex_managed_dead" = "1" ]; then
     "$codex_managed_command"
 fi
 
-exec tmux attach-session -t "=$codex_managed_session"
+tmux attach-session -t "=$codex_managed_session"
+codex_managed_attach_status=$?
+
+# Remove the dead-pane tombstone after a normal Codex exit.
+codex_managed_dead=$(tmux display-message -p -t "$codex_managed_session:0.0" '#{pane_dead}' 2>/dev/null || printf '1')
+if [ "$codex_managed_dead" = "1" ]; then
+  tmux kill-session -t "=$codex_managed_session" 2>/dev/null || true
+fi
+
+exit "$codex_managed_attach_status"
