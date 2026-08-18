@@ -27,6 +27,7 @@ STATUS_5XX = re.compile(
 AUTO_CONTINUE = b"1\n"
 START_EVENTS = {"task_started", "turn_started"}
 COMPLETE_EVENTS = {"task_complete", "turn_complete"}
+SUCCESS_STATUSES = {"complete", "completed", "success", "succeeded"}
 THREAD_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.IGNORECASE)
 ROLLOUT_TAIL_BYTES = 8 * 1024 * 1024
 MAX_NEW_RESUMES_PER_SWEEP = 4
@@ -143,6 +144,7 @@ def _terminal_5xx_details(
     latest_complete = -1
     latest_error = ""
     latest_error_at: float | None = None
+    latest_status = ""
     for line_number, line in enumerate(_read_rollout_tail(path).splitlines(), 1):
         try:
             record = json.loads(line)
@@ -151,12 +153,20 @@ def _terminal_5xx_details(
         name = event_name(record)
         if name in START_EVENTS:
             latest_start = line_number
+            # A new turn supersedes the previous terminal error. Do not let an
+            # older 5xx make an in-progress or successfully completed goal look
+            # retryable.
+            latest_error = ""
+            latest_error_at = None
+            latest_status = ""
         if name in COMPLETE_EVENTS:
             latest_complete = line_number
             payload = record.get("payload") or {}
             error = payload.get("error")
             latest_error = json.dumps(error, ensure_ascii=True) if error else ""
             latest_error_at = _record_timestamp(record) if error else None
+            status = payload.get("status")
+            latest_status = status.lower() if isinstance(status, str) else ""
 
     if latest_complete < 0:
         result = (False, "no terminal turn event in rollout tail", None)
@@ -165,6 +175,8 @@ def _terminal_5xx_details(
             result = (True, "unfinished retry after provider 5xx", latest_error_at)
         else:
             result = (False, "turn is running", None)
+    elif latest_status in SUCCESS_STATUSES and not latest_error:
+        result = (False, "latest turn completed successfully", None)
     elif latest_error and STATUS_5XX.search(latest_error):
         match = STATUS_5XX.search(latest_error)
         result = (True, match.group(0) if match else "provider 5xx", latest_error_at)
