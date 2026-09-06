@@ -1,11 +1,19 @@
 import WebSocket from "ws";
+import { type Failure, failureOf, WatchdogError } from "./engine.ts";
 import { basename } from "node:path";
-import { type Evidence, type Packet, redact, type Snapshot } from "./policy.ts";
+import {
+  type Evidence,
+  fingerprint,
+  type Packet,
+  redact,
+  type Snapshot,
+} from "./policy.ts";
 
 type Row = Record<string, any>;
 export class Observer {
   socket?: WebSocket;
   serial = 0;
+  deadline = Infinity;
   pending = new Map<
     number,
     {
@@ -14,7 +22,25 @@ export class Observer {
       timer: ReturnType<typeof setTimeout>;
     }
   >();
+  onFailure: (id: string, failure: Failure) => void = () => {};
+  onSuccess: (id: string, method: string) => void = () => {};
+  readDue: (id: string, method: string) => boolean = () => true;
   constructor(readonly home: string) {}
+  async readFor(
+    id: string,
+    method: string,
+    params: Row,
+  ): Promise<any | undefined> {
+    if (!this.readDue(id, method)) return undefined;
+    try {
+      const result = await this.call(method, params);
+      this.onSuccess(id, method);
+      return result;
+    } catch (e) {
+      this.onFailure(id, { ...failureOf(e, method), method });
+      return undefined;
+    }
+  }
   async open() {
     const ws = new WebSocket(
       `ws+unix://${this.home}/app-server-control/app-server-control.sock:/`,
@@ -37,8 +63,17 @@ export class Observer {
       if (!pending) return;
       clearTimeout(pending.timer);
       this.pending.delete(r.id);
-      if (r.error) pending.reject(new Error(`RPC ${r.error.code}`));
-      else pending.resolve(r.result);
+      if (r.error) {
+        pending.reject(
+          new WatchdogError({
+            method: "rpc",
+            category: r.error.code === -32601
+              ? "unsupported_method"
+              : "rpc_error",
+            code: r.error.code,
+          }),
+        );
+      } else pending.resolve(r.result);
     });
     const lost = () => {
       for (const p of this.pending.values()) {
@@ -75,12 +110,17 @@ export class Observer {
     if (this.socket?.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error("Observer unavailable"));
     }
+    if (Date.now() >= this.deadline) {
+      return Promise.reject(
+        new WatchdogError({ method, category: "tick_deadline" }),
+      );
+    }
     const id = ++this.serial;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error("RPC deadline"));
-      }, 3000);
+        reject(new WatchdogError({ method, category: "timeout" }));
+      }, Math.max(1, Math.min(3000, this.deadline - Date.now())));
       this.pending.set(id, { resolve, reject, timer });
       this.socket!.send(JSON.stringify({ id, method, params }));
     });
@@ -92,7 +132,8 @@ export class Observer {
   async discover(
     known: string[],
     exclude: Set<string>,
-  ): Promise<{ rows: Row[]; partial: boolean }> {
+  ): Promise<{ rows: Row[]; partial: boolean; reasons: string[] }> {
+    const until = Math.min(this.deadline, Date.now() + 15_000);
     const rows = new Map<string, Row>();
     const loaded = await this.call("thread/loaded/list", {});
     const ids = new Set<string>([
@@ -100,6 +141,7 @@ export class Observer {
       ...(loaded.data ?? loaded.threadIds ?? []),
     ]);
     let partial = false;
+    const reasons = new Set<string>();
     // Fresh first page each minute; rotate an additional cursor to cover a busy host.
     for (
       const cursor of [null, this.cursor].filter((v, i, a) =>
@@ -120,53 +162,68 @@ export class Observer {
           t.status?.type === "active"
         ) rows.set(t.id, t);
       }
-      if (this.cursor) partial = true;
+      if (this.cursor) {
+        partial = true;
+        reasons.add("historical_pages");
+      }
     }
     for (const id of ids) {
+      if (Date.now() >= until) {
+        partial = true;
+        reasons.add("discovery_deadline");
+        break;
+      }
       if (rows.size >= 128) {
         partial = true;
+        reasons.add("capacity");
         break;
       }
       if (!rows.has(id) && !exclude.has(id)) {
-        try {
-          rows.set(
-            id,
-            (await this.call("thread/read", {
-              threadId: id,
-              includeTurns: false,
-            })).thread,
-          );
-        } catch {
+        const result = await this.readFor(id, "thread/read", {
+          threadId: id,
+          includeTurns: false,
+        });
+        if (result?.thread) rows.set(id, result.thread);
+        else {
           partial = true;
+          reasons.add("known_read_failed");
         }
       }
     }
     return {
       rows: [...rows.values()].filter((t) => !exclude.has(t.id)).slice(0, 128),
       partial,
+      reasons: [...reasons],
     };
   }
   async snapshot(t: Row): Promise<Snapshot> {
     const [goals, turns] = await Promise.all([
-      this.call("thread/goal/get", { threadId: t.id }),
-      this.call("thread/turns/list", {
+      this.readFor(t.id, "thread/goal/get", { threadId: t.id }),
+      this.readFor(t.id, "thread/turns/list", {
         threadId: t.id,
         limit: 1,
         sortDirection: "desc",
         itemsView: "notLoaded",
       }),
     ]);
-    const turn = turns.data?.[0];
+    const turn = turns?.data?.[0];
     return {
       id: t.id,
       turn: turn?.id ?? "",
       runtime: t.status?.type ?? "unknown",
       flags: t.status?.activeFlags ?? [],
-      goal: goals.goal?.status ?? null,
+      goal: goals?.goal?.status ?? null,
       terminal: turn?.status ?? null,
       updated: t.updatedAt * 1000,
       label: redact(basename(t.cwd ?? "Codex"), 100),
       parent: t.parentThreadId ?? null,
+      observedAt: Date.now(),
+      archived: t.archived === true,
+      coverage: {
+        runtime: typeof t.status?.type === "string",
+        goal: goals !== undefined,
+        turn: turns !== undefined,
+      },
     };
   }
   async fresh(id: string): Promise<Snapshot> {
@@ -186,6 +243,7 @@ export async function evidence(
   let text = "";
   let truncated = false;
   let logVersion = "";
+  let sourceOffset = 0;
   try {
     const stat = await file.stat();
     const size = stat.size;
@@ -199,8 +257,9 @@ export async function evidence(
       if (read === null) break;
       n += read;
     }
-    text = new TextDecoder().decode(bytes.subarray(0, n));
-    if (offset) text = text.slice(text.indexOf("\n") + 1);
+    const cut = offset ? bytes.subarray(0, n).indexOf(10) + 1 : 0;
+    sourceOffset = offset + cut;
+    text = new TextDecoder().decode(bytes.subarray(cut, n));
     // Ignore partial writes; never parse an incomplete JSONL record.
     text = text.slice(0, text.lastIndexOf("\n") + 1);
     truncated = offset > 0;
@@ -211,17 +270,25 @@ export async function evidence(
   let currentTurn = "";
   let lastProgress = snapshot.updated;
   let seenStart = false;
+  let gaps = false;
   const failures = new Map<
     string,
     { count: number; first: number; last: number }
   >();
+  let lineIndex = 0;
   for (const line of text.split("\n")) {
+    lineIndex = sourceOffset;
+    sourceOffset += new TextEncoder().encode(line).length + 1;
     if (!line) continue;
-    if (line.length > 65536) continue;
+    if (line.length > 65536) {
+      gaps = true;
+      continue;
+    }
     let r: Row;
     try {
       r = JSON.parse(line);
     } catch {
+      gaps = true;
       continue;
     }
     const p = r.payload ?? {};
@@ -239,6 +306,7 @@ export async function evidence(
     }
     if (
       r.type === "response_item" && p.type === "message" &&
+      p.channel !== "analysis" &&
       ["user", "assistant"].includes(p.role)
     ) {
       const body = (p.content ?? []).filter((x: Row) =>
@@ -249,7 +317,7 @@ export async function evidence(
       }
       if (body) {
         records.push({
-          id: `e${r.ordinal ?? at}`,
+          id: `e${r.ordinal ?? `${at}:${lineIndex}`}`,
           at,
           kind: p.role,
           text: redact(body, 550),
@@ -261,10 +329,12 @@ export async function evidence(
       if (item.type === "FileChange") {
         lastProgress = at;
         records.push({
-          id: `e${r.ordinal ?? at}`,
+          id: `e${r.ordinal ?? `${at}:${lineIndex}`}`,
           at,
           kind: "change",
-          text: "File change completed; acceptance not yet established.",
+          text: `File change ${await fingerprint(
+            JSON.stringify(item.changes ?? item.id),
+          )} completed; acceptance not yet established.`,
         });
       }
       if (
@@ -272,9 +342,10 @@ export async function evidence(
       ) {
         const exit = item.exit_code;
         // Only an outcome signature, never outgoing command arguments or output.
-        const key = `${exit}:${
-          redact(String(item.command?.[0] ?? "command"), 60)
-        }`;
+        const operation = await fingerprint(
+          JSON.stringify(item.command ?? item.id),
+        );
+        const key = `${exit}:${operation}`;
         if (exit !== 0) {
           const f = failures.get(key) ?? { count: 0, first: at, last: at };
           f.count++;
@@ -282,10 +353,10 @@ export async function evidence(
           failures.set(key, f);
         }
         records.push({
-          id: `e${r.ordinal ?? at}`,
+          id: `e${r.ordinal ?? `${at}:${lineIndex}`}`,
           at,
           kind: "command",
-          text: `Command completed with exit ${exit}.`,
+          text: `Command ${operation} completed with exit ${exit}.`,
         });
       }
     }
@@ -295,7 +366,7 @@ export async function evidence(
     snapshot,
     logVersion,
     records: dedup,
-    complete: !truncated || seenStart,
+    complete: !gaps && (!truncated || seenStart),
     silenceMs: Math.max(0, Date.now() - lastProgress),
     repeatedFailures: Math.max(
       0,

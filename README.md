@@ -177,11 +177,17 @@ deno task watchdog --duration 6h
 It checks the existing Codex daemon every minute, scans bounded recent evidence
 at five-minute intervals, and considers ten minutes without progress suspicious.
 Current approvals/input requests bypass the model. Ambiguous cases use the
-configured provider's `gpt-5.6-luna` with medium reasoning, at most twelve calls
-per run and two per turn/progress episode, fifteen minutes apart. No model tools
-are enabled. The monitor never starts, resumes, interrupts or edits watched
-threads. It watches active sessions and recent blocked goals; paused and
-superseded/interrupted predecessors are excluded by their lifecycle.
+configured provider's `gpt-5.6-luna` with medium reasoning. V2 makes one credit
+available immediately and replenishes it fifteen minutes after each reserved
+attempt. Credits do not accumulate: at most 24 attempts fit in a six-hour run.
+Failed or uncertain requests consume their reserved attempt. Unchanged semantic
+evidence is not repeatedly analyzed; a stated expected wait can receive one
+bounded recheck. A fair queue gives older eligible sessions the next credit.
+No model tools are enabled. The monitor never starts, resumes, interrupts or
+edits watched threads. Active work and blocked goals remain watched; explicit
+paused, archived, completed or interrupted work retires. Missing data does not
+prove retirement. Distinct requests within one turn can notify separately.
+
 
 Existing configuration is reused: `~/.codex/config.toml` (or `CODEX_HOME`), its
 provider auth helper or API key, and `~/.config/codex-nudge/topic`. The ntfy topic
@@ -200,7 +206,7 @@ bodies and credentials. Ordinary historical idle questions are not reactivated.
 `--once` performs one real check (it can notify or call the model). `--smoke`
 reads actual session metadata, sends one synthetic blocker to Luna, and sends a
 labeled ntfy test; it consumes one separate model request. Use it only when that
-live test is authorized. Normal tests use no credentials/network:
+live test is authorized. Normal tests use synthetic evidence and a local fake Unix-socket daemon, with no model or ntfy traffic:
 
 ```sh
 deno task watchdog:test
@@ -210,6 +216,28 @@ deno task watchdog:check
 Only sessions visible to this host's shared daemon are covered. Independently
 running VPS processes require evidence through their supervising sessions.
 A sleeping/offline host cannot monitor; this is not an external uptime service.
-A failed observer emits a separate coverage warning after three minutes. Three
-consecutive model failures disable further triage for that run; direct checks
-continue. The fixed call/input/output limits are usage caps, not verified prices.
+V2 tracks observation, analysis and delivery health separately. Failed reads
+receive per-source backoff and a coverage warning after three minutes; an
+unreadable goal field does not hide a current approval flag. Overdue analysis
+queues generate a coalesced delay notice. Temporary provider failures enter
+recoverable, credit-limited backoff; authentication/configuration rejection
+requires repair and an explicit restart. Direct checks remain available.
+
+`events.jsonl` records decision/skip reasons, source failures, analysis attempts
+and returned usage, health transitions, and notification acceptance/rejection or
+uncertainty. Every five minutes it writes a coverage summary. Logs rotate at
+10 MiB with two older files; the last ten expired run summaries are retained.
+State V2 preserves the original deadline and credit time across restarts. V1
+unfinished state receives an explicit cutover notice and no immediate free
+credit. Invalid state is rejected rather than silently reset.
+
+The outbox limits posts to three per minute, coalesces monitoring-health bursts,
+and rechecks session evidence before sending. A definite rate-limit rejection
+can receive two delayed retries; an uncertain POST is never blindly repeated.
+Service acceptance is not proof that an iPhone displayed or read a notification.
+A final summary is attempted before normal expiry. Sudden process or machine
+death cannot be reported reliably by that same process. Usage caps are not
+verified dollar prices.
+
+See [V2 acceptance evidence](docs/watchdog-v2-acceptance.md) for the bounded
+replay, runtime checks, and known coverage limits.

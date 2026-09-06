@@ -8,6 +8,9 @@ export type Snapshot = {
   label: string;
   updated: number;
   parent: string | null;
+  coverage?: { runtime: boolean; goal: boolean; turn: boolean };
+  observedAt?: number;
+  archived?: boolean;
 };
 export type Evidence = {
   id: string;
@@ -46,6 +49,14 @@ export function redact(value: string, max = 400): string {
     .slice(0, max);
 }
 export function retired(s: Snapshot): boolean {
+  if (s.archived) return true;
+  if (
+    s.goal === "paused" || s.goal === "complete" || s.goal === "completed" ||
+    s.terminal === "interrupted"
+  ) return true;
+  if (
+    s.coverage && (!s.coverage.runtime || !s.coverage.goal || !s.coverage.turn)
+  ) return false;
   return s.goal === "paused" || s.goal === "complete" ||
     s.goal === "completed" ||
     s.terminal === "interrupted" ||
@@ -100,18 +111,18 @@ export function validateVerdict(v: unknown, p: Packet): Verdict {
 }
 export function eligible(v: Verdict, p: Packet): boolean {
   if (
-    retired(p.snapshot) || v.confidence !== "high" || !v.evidence_ids.length
+    !p.complete || retired(p.snapshot) || v.confidence !== "high" ||
+    !v.evidence_ids.length
   ) return false;
   const cited = p.records.filter((r) => v.evidence_ids.includes(r.id));
   // A model judgement cannot turn silence into a verified need for user action.
   return v.classification === "needs_user" &&
     Boolean(v.requested_action.trim()) &&
-    (p.snapshot.goal === "blocked" ||
-      cited.some((r) =>
-        r.kind === "assistant" &&
-        /(?:need|please|blocked|cannot|can't|permission|approv|access|sign.in|log.in|missing|select|choose|provide)/i
-          .test(r.text)
-      ));
+    (cited.some((r) =>
+      r.kind === "assistant" &&
+      /(?:need|please|blocked|cannot|can't|permission|approv|access|sign.in|log.in|missing|select|choose|provide)/i
+        .test(r.text)
+    ));
 }
 export function sameEpoch(a: Snapshot, b: Snapshot): boolean {
   return a.id === b.id && a.turn === b.turn && a.updated === b.updated &&
