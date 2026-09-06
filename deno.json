@@ -1,0 +1,11 @@
+{
+  "tasks": {
+    "watchdog": "deno run --allow-read --allow-write --allow-net --allow-env --allow-run watchdog/main.ts",
+    "watchdog:test": "deno test --allow-read --allow-write --allow-run --allow-env --allow-net watchdog/",
+    "watchdog:check": "deno check watchdog/main.ts"
+  },
+  "imports": {
+    "ws": "npm:ws@8.18.3",
+    "toml": "npm:smol-toml@1.4.2"
+  }
+}
