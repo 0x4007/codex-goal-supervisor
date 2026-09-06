@@ -231,8 +231,11 @@ State V2 preserves the original deadline and credit time across restarts. V1
 unfinished state receives an explicit cutover notice and no immediate free
 credit. Invalid state is rejected rather than silently reset.
 
-The outbox limits posts to three per minute, coalesces monitoring-health bursts,
-and rechecks session evidence before sending. A definite rate-limit rejection
+The outbox limits posts to three per minute, coalesces monitoring-health bursts
+and bounded bursts with a known parent session, and rechecks every member before
+sending. Each child identity keeps its own ledger entry and shares the receipt.
+A canceled alert that never reached dispatch can be queued again; accepted or
+uncertain sends remain deduplicated. A definite rate-limit rejection
 can receive two delayed retries; an uncertain POST is never blindly repeated.
 Service acceptance is not proof that an iPhone displayed or read a notification.
 A final summary is attempted before normal expiry. Sudden process or machine

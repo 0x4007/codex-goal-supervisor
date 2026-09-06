@@ -317,11 +317,12 @@ export class Engine {
     }
   }
   async queue(key: string, message: string, fields: Partial<Alert> = {}) {
-    if (this.state.alerts[key]) {
+    const prior = this.state.alerts[key];
+    if (prior && !(prior.state === "resolved" && prior.attempts === 0)) {
       this.event("alert_decision", { key, reason: "deduplicated" });
       return;
     }
-    if (Object.keys(this.state.alerts).length >= 1024) {
+    if (!prior && Object.keys(this.state.alerts).length >= 1024) {
       const resolved = Object.values(this.state.alerts).filter((a) =>
         a.resolved
       ).sort((a, b) =>
@@ -862,6 +863,44 @@ export class Engine {
       }.`,
     );
   }
+  private async ready(a: Alert, now: number): Promise<boolean> {
+    if (a.session) {
+      if (!this.readDue(a.session, "notification_revalidation")) return false;
+      try {
+        const p = await this.io.fresh(a.session, Boolean(a.version));
+        if (a.version && !p.complete) {
+          this.failure(a.session, {
+            method: "notification_revalidation",
+            category: "incomplete_evidence",
+          });
+          a.next = now + MINUTE;
+          return false;
+        }
+        this.success(a.session, "notification_revalidation");
+        if (
+          retired(p.snapshot) || p.snapshot.turn !== a.turn ||
+          (a.direct && directBlocker(p.snapshot) !== a.direct) ||
+          (a.version && directBlocker(p.snapshot)) ||
+          (a.failed &&
+            (p.snapshot.terminal !== "failed" ||
+              p.snapshot.runtime === "active" ||
+              p.snapshot.coverage?.turn === false)) ||
+          (a.version &&
+            (!p.complete || await semanticVersion(p) !== a.version))
+        ) {
+          a.state = "resolved";
+          a.resolved = this.io.now();
+          this.event("alert_decision", { key: a.key, reason: "stale" });
+          return false;
+        }
+      } catch (e) {
+        this.failure(a.session, failureOf(e, "notification_revalidation"));
+        a.next = now + MINUTE;
+        return false;
+      }
+    }
+    return true;
+  }
   async flush(deadline = Infinity) {
     const now = this.io.now();
     this.state.posts = this.state.posts.filter((at) => now - at < MINUTE);
@@ -879,68 +918,76 @@ export class Engine {
       ) {
         break;
       }
-      if (a.session) {
-        if (!this.readDue(a.session, "notification_revalidation")) continue;
-        try {
-          const p = await this.io.fresh(a.session, Boolean(a.version));
-          if (a.version && !p.complete) {
-            this.failure(a.session, {
-              method: "notification_revalidation",
-              category: "incomplete_evidence",
-            });
-            a.next = now + MINUTE;
-            continue;
-          }
-          this.success(a.session, "notification_revalidation");
+      if (a.state !== "queued" || !await this.ready(a, now)) continue;
+      const group = [a];
+      let message = a.message;
+      let target = a.session;
+      const root = a.session
+        ? this.state.tracked[a.session]?.snapshot.parent ?? a.session
+        : undefined;
+      if (root) {
+        for (const other of pending) {
           if (
-            retired(p.snapshot) || p.snapshot.turn !== a.turn ||
-            (a.direct && directBlocker(p.snapshot) !== a.direct) ||
-            (a.version && directBlocker(p.snapshot)) ||
-            (a.failed &&
-              (p.snapshot.terminal !== "failed" ||
-                p.snapshot.runtime === "active" ||
-                p.snapshot.coverage?.turn === false)) ||
-            (a.version &&
-              (!p.complete || await semanticVersion(p) !== a.version))
-          ) {
-            a.state = "resolved";
-            a.resolved = this.io.now();
-            this.event("alert_decision", { key: a.key, reason: "stale" });
-            continue;
+            other === a || other.state !== "queued" ||
+            other.priority !== a.priority || !other.session ||
+            other.session === a.session
+          ) continue;
+          const otherRoot =
+            this.state.tracked[other.session]?.snapshot.parent ?? other.session;
+          const combined =
+            `${a.message}\nSession: ${a.session}\n\n${other.message}\nSession: ${other.session}`;
+          if (
+            otherRoot !== root ||
+            new TextEncoder().encode(combined).length > 800
+          ) continue;
+          if (await this.ready(other, now)) {
+            group.push(other);
+            message = combined;
+            target = root;
+            break;
           }
-        } catch (e) {
-          this.failure(a.session, failureOf(e, "notification_revalidation"));
-          a.next = now + MINUTE;
-          continue;
         }
       }
-      a.state = "dispatching";
-      a.attempts++;
+      if (this.io.now() >= deadline) break;
+      if (group.some((member) => member.state !== "queued")) continue;
+      for (const member of group) {
+        member.state = "dispatching";
+        member.attempts++;
+      }
       this.state.posts.push(this.io.now());
       await this.io.save();
+      const keys = group.map((member) => member.key);
       this.event("alert_dispatch", {
         key: a.key,
-        session: a.session,
+        memberKeys: keys,
+        session: target,
         attempt: a.attempts,
       });
       let result: Delivery;
       try {
-        result = await this.io.send(a.message, a.session);
+        result = await this.io.send(message, target);
       } catch {
         result = { state: "uncertain", category: "transport" };
       }
-      a.state = result.state;
-      a.receipt = result.receipt;
-      a.category = result.category;
       this.count(`delivery:${result.state}`);
-      this.event("alert_result", { key: a.key, session: a.session, ...result });
-      if (
-        (result.state === "unsent" ||
-          (result.state === "rejected" && result.category === "rate_limit")) &&
-        a.attempts < 3
-      ) {
-        a.state = "queued";
-        a.next = Math.max(now + MINUTE, result.retryAt ?? 0);
+      for (const member of group) {
+        member.state = result.state;
+        member.receipt = result.receipt;
+        member.category = result.category;
+        this.event("alert_result", {
+          key: member.key,
+          memberKeys: keys,
+          session: member.session,
+          ...result,
+        });
+        if (
+          (result.state === "unsent" ||
+            (result.state === "rejected" &&
+              result.category === "rate_limit")) && member.attempts < 3
+        ) {
+          member.state = "queued";
+          member.next = Math.max(now + MINUTE, result.retryAt ?? 0);
+        }
       }
       if (result.state !== "accepted") {
         this.event("health_transition", {

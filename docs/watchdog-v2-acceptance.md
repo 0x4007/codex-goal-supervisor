@@ -79,3 +79,16 @@ with receipt `Nwsk3cmE6cSS`. It reported one covered and eight unknown sessions;
 that partial coverage is a real limitation, not a green claim. This run tested
 the pre-correction candidate; the scheduling correction has focused replay and
 runtime regression coverage and will receive a final short live expiry check.
+
+
+Round 2 reviewed `226c9d1` against `main` and exited successfully with a P1
+finding: an unsent canceled alert could not be queued again under the same
+request key. The correction permits reuse only when the prior alert was
+canceled before any dispatch attempt. Accepted and uncertain sends remain
+deduplicated. Root-session burst tests also prove one bounded POST can retain
+two child identities and exclude a stale member. All 53 tests now pass.
+
+The corrected real expiry run at 15:15:36 UTC discovered 29 sessions, tracked
+five, made zero model calls, and expired at 15:15:48 UTC. ntfy accepted its
+summary with receipt `GoIlnp3h5Y5V`. That run validates the scheduling correction;
+the later queue/dedup correction has focused fake-transport regression tests.

@@ -628,3 +628,78 @@ Deno.test("late analyst result cannot overwrite a new request during concurrent 
   await h.engine.flush();
   assert(h.sent.length === 1);
 });
+
+Deno.test("canceled never-dispatched request can requeue with current evidence", async () => {
+  const h = harness();
+  await h.put(packet());
+  await h.engine.analyzeOne();
+  const p = packet();
+  p.records.push({
+    id: "command",
+    at: epoch + 1,
+    kind: "command",
+    text: "Command different completed with exit 0.",
+  });
+  await h.put(p);
+  h.advance(CREDIT_MS);
+  await h.put(p);
+  await h.engine.analyzeOne();
+  await h.engine.flush();
+  assert(h.calls.length === 2 && h.sent.length === 1);
+});
+Deno.test("accepted or uncertain request remains deduplicated across command changes", async () => {
+  for (const state of ["accepted", "uncertain"] as const) {
+    const h = harness();
+    h.delivery({ state, receipt: state === "accepted" ? "fake" : undefined });
+    await h.put(packet());
+    await h.engine.analyzeOne();
+    await h.engine.flush();
+    const p = packet();
+    p.records.push({
+      id: "command",
+      at: epoch + 1,
+      kind: "command",
+      text: "Command different completed with exit 0.",
+    });
+    h.advance(CREDIT_MS);
+    await h.put(p);
+    await h.engine.analyzeOne();
+    await h.engine.flush();
+    assert(h.sent.length === 1);
+  }
+});
+Deno.test("known root-session burst shares one receipt and preserves both child identities", async () => {
+  const h = harness();
+  for (const id of ["a", "b"]) {
+    const p = packet(id);
+    p.snapshot.parent = "root";
+    p.snapshot.flags = ["waitingOnApproval"];
+    await h.put(p);
+  }
+  await h.engine.flush();
+  assert(
+    h.sent.length === 1 && h.sent[0].includes("Session: a") &&
+      h.sent[0].includes("Session: b"),
+  );
+  assert(
+    Object.values(h.state.alerts).filter((a) =>
+      a.state === "accepted" && a.receipt === "test"
+    ).length === 2,
+  );
+});
+Deno.test("stale member of a root burst is excluded before POST", async () => {
+  const h = harness();
+  for (const id of ["a", "b"]) {
+    const p = packet(id);
+    p.snapshot.parent = "root";
+    p.snapshot.flags = ["waitingOnApproval"];
+    await h.put(p);
+  }
+  h.packets.get("b")!.snapshot.goal = "paused";
+  await h.engine.flush();
+  assert(h.sent.length === 1 && !h.sent[0].includes("Session: b"));
+  assert(
+    Object.values(h.state.alerts).filter((a) => a.state === "accepted")
+      .length === 1,
+  );
+});
