@@ -127,29 +127,36 @@ export async function analyze(
   } finally {
     await reader.cancel();
   }
-  const result = JSON.parse(raw);
-  if (result.status !== "completed" || result.model !== "gpt-5.6-luna") {
-    throw new Error("Analyst response incomplete or wrong model");
-  }
-  if (
-    (result.output ?? []).some((x: Record<string, unknown>) =>
-      !["message", "reasoning"].includes(String(x.type))
-    )
-  ) throw new Error("Unexpected analyst output");
-  const text = result.output_text ??
-    (result.output ?? []).flatMap((x: any) => x.content ?? []).filter((
-      x: any,
-    ) => x.type === "output_text").map((x: any) => x.text).join("");
-  const usage: Record<string, number> = {};
-  for (const [key, value] of Object.entries(result.usage ?? {})) {
+  try {
+    const result = JSON.parse(raw);
+    if (result.status !== "completed" || result.model !== "gpt-5.6-luna") {
+      throw new Error("Analyst response incomplete or wrong model");
+    }
     if (
-      ["input_tokens", "output_tokens", "total_tokens"].includes(key) &&
-      typeof value === "number" && Number.isFinite(value)
-    ) usage[key] = value;
+      (result.output ?? []).some((x: Record<string, unknown>) =>
+        !["message", "reasoning"].includes(String(x.type))
+      )
+    ) throw new Error("Unexpected analyst output");
+    const text = result.output_text ??
+      (result.output ?? []).flatMap((x: any) => x.content ?? []).filter((
+        x: any,
+      ) => x.type === "output_text").map((x: any) => x.text).join("");
+    const usage: Record<string, number> = {};
+    for (const [key, value] of Object.entries(result.usage ?? {})) {
+      if (
+        ["input_tokens", "output_tokens", "total_tokens"].includes(key) &&
+        typeof value === "number" && Number.isFinite(value)
+      ) usage[key] = value;
+    }
+    return {
+      verdict: validateVerdict(JSON.parse(text), bounded),
+      model: result.model,
+      usage: Object.keys(usage).length ? usage : null,
+    };
+  } catch {
+    throw new WatchdogError({
+      method: "analysis",
+      category: "invalid_response",
+    });
   }
-  return {
-    verdict: validateVerdict(JSON.parse(text), bounded),
-    model: result.model,
-    usage: Object.keys(usage).length ? usage : null,
-  };
 }

@@ -302,6 +302,7 @@ export async function evidence(
     if ((explicitTurn ?? currentTurn) !== snapshot.turn) continue;
     if (p.type === "task_started" && p.turn_id === snapshot.turn) {
       seenStart = true;
+      gaps = false;
       lastProgress = at;
     }
     if (

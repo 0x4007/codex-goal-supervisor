@@ -55,3 +55,27 @@ retrieval, including after a cooldown. It was not resubmitted. This implementati
 follows the saved local V2 plan and does not claim a returned Pro verdict.
 
 Final check, review, and merge evidence will be recorded here after validation.
+
+## Review correction and real expiry
+
+Round 1 reviewed `ef728831ec952ab2a23b0557e40e0d925c416963` against `main`
+with `codex review --base main` and exited successfully with one P1 and two P2
+findings. The correction starts inference before slow observation, overlaps it
+with read-only scans using serialized state writes, caps observation work at
+30 seconds of the 45-second tick, and services the outbox before and after
+observation. It also clears prior-turn gaps at a verified current-turn boundary
+and reports stale complete evidence as lost coverage. A separate local probe
+proved that an incomplete scan could resolve a queued alert; the correction
+preserves the episode and queued alert until complete evidence returns.
+
+There are now 49 focused tests, including the shared runtime tick's slow-scan
+regression, concurrent stale-result handling, incomplete-scan recovery, and a
+synthetic provider adapter test for model/cap/usage and invalid-response handling.
+Formatting and type checks pass.
+
+A real 12-second run at 15:00:26 UTC discovered 30 sessions, tracked nine, made
+zero model calls, and expired at 15:00:38 UTC. ntfy accepted its final summary
+with receipt `Nwsk3cmE6cSS`. It reported one covered and eight unknown sessions;
+that partial coverage is a real limitation, not a green claim. This run tested
+the pre-correction candidate; the scheduling correction has focused replay and
+runtime regression coverage and will receive a final short live expiry check.

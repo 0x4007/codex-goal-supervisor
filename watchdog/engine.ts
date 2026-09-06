@@ -538,6 +538,16 @@ export class Engine {
     const t = this.state.tracked[p.snapshot.id];
     if (!t || t.direct) return;
     const now = this.io.now();
+    // An incomplete scan cannot establish a new semantic episode or resolve an
+    // existing alert. Retain its identity until complete current evidence arrives.
+    if (!p.complete) {
+      t.evidenceAt = now;
+      t.contextComplete = false;
+      this.packets.set(p.snapshot.id, p);
+      delete t.candidate;
+      this.decision(p.snapshot.id, "incomplete_evidence", t.version);
+      return;
+    }
     const version = await semanticVersion(p);
     t.evidenceAt = now;
     t.contextComplete = p.complete;
@@ -600,6 +610,25 @@ export class Engine {
     }
     this.decision(p.snapshot.id, "fair_queue", version);
   }
+  async tick(observe: () => Promise<void>, deadline: number) {
+    const calls = this.state.calls;
+    // Begin useful inference before the slow observation phase. State saves are
+    // serialized by the runtime; session alerts still revalidate in the outbox.
+    const analysis = this.analyzeOne(deadline);
+    try {
+      await this.flush(deadline);
+      await observe();
+      await this.flush(deadline);
+    } finally {
+      await analysis;
+    }
+    // Fresh first-sweep candidates may use spare time; slow sweeps leave them
+    // queued for the early analysis phase of the next tick.
+    if (this.state.calls === calls && deadline - this.io.now() >= 39_000) {
+      await this.analyzeOne(deadline);
+    }
+    if (deadline - this.io.now() >= 10_000) await this.flush(deadline);
+  }
   async analyzeOne(deadline = Infinity) {
     const now = this.io.now();
     const candidates = Object.entries(this.state.tracked).filter(([, t]) =>
@@ -635,6 +664,7 @@ export class Engine {
     if (!selected) return;
     const [id, t] = selected;
     const version = t.candidate!.version;
+    const userEpoch = t.userEpoch;
     let p: Packet;
     try {
       p = await this.io.fresh(id, true);
@@ -685,26 +715,28 @@ export class Engine {
       attempt.usage = result.usage;
       this.state.modelErrors = 0;
       this.state.nextProbe = 0;
-      t.verdict = result.verdict.classification;
-      t.recheckAt = undefined;
-      if (t.verdict === "expected_wait") {
-        const stated = p.records.filter((r) => r.kind === "assistant").map(
-          (r) => ({
-            r,
-            m: /(?:wait|takes?|allow|within|up to)\D{0,20}(\d{1,3})\s*(seconds?|minutes?|hours?)/i
-              .exec(r.text),
-          }),
-        ).find((x) => x.m);
-        if (stated?.m) {
-          const factor = /hour/i.test(stated.m[2])
-            ? 60 * MINUTE
-            : /minute/i.test(stated.m[2])
-            ? MINUTE
-            : 1000;
-          t.recheckAt = Math.max(
-            this.io.now() + CREDIT_MS,
-            stated.r.at + Number(stated.m[1]) * factor,
-          );
+      if (t.version === version) {
+        t.verdict = result.verdict.classification;
+        t.recheckAt = undefined;
+        if (t.verdict === "expected_wait") {
+          const stated = p.records.filter((r) => r.kind === "assistant").map(
+            (r) => ({
+              r,
+              m: /(?:wait|takes?|allow|within|up to)\D{0,20}(\d{1,3})\s*(seconds?|minutes?|hours?)/i
+                .exec(r.text),
+            }),
+          ).find((x) => x.m);
+          if (stated?.m) {
+            const factor = /hour/i.test(stated.m[2])
+              ? 60 * MINUTE
+              : /minute/i.test(stated.m[2])
+              ? MINUTE
+              : 1000;
+            t.recheckAt = Math.max(
+              this.io.now() + CREDIT_MS,
+              stated.r.at + Number(stated.m[1]) * factor,
+            );
+          }
         }
       }
       this.event("analysis_completed", {
@@ -713,7 +745,7 @@ export class Engine {
         version,
         model: result.model,
         requestedEffort: "medium",
-        classification: t.verdict,
+        classification: result.verdict.classification,
         evidenceIds: result.verdict.evidence_ids,
         usage: result.usage,
         latency: this.io.now() - at,
@@ -753,13 +785,15 @@ export class Engine {
       }
       // Failed attempts may retry useful unchanged evidence after backoff; these
       // are new charged attempts, not automatic resubmission inside the adapter.
-      t.analyses = 0;
-      t.candidate = {
-        version,
-        since: at,
-        next: Math.max(this.state.nextCredit, this.state.nextProbe),
-        analyses: 0,
-      };
+      if (t.version === version) {
+        t.analyses = 0;
+        t.candidate = {
+          version,
+          since: at,
+          next: Math.max(this.state.nextCredit, this.state.nextProbe),
+          analyses: 0,
+        };
+      }
     }
     if (result && eligible(result.verdict, p)) {
       const cited = p.records.filter((r) =>
@@ -796,7 +830,8 @@ export class Engine {
     ].filter(([, f]) => now - f.first >= 3 * MINUTE);
     const missing = Object.entries(this.state.tracked).filter(([, t]) =>
       !t.direct && now - t.seen >= 10 * MINUTE &&
-      (!this.packets.get(t.snapshot.id)?.complete)
+      (!this.packets.get(t.snapshot.id)?.complete ||
+        now - t.evidenceAt >= 10 * MINUTE)
     );
     await this.health(
       "observation",
@@ -827,7 +862,7 @@ export class Engine {
       }.`,
     );
   }
-  async flush() {
+  async flush(deadline = Infinity) {
     const now = this.io.now();
     this.state.posts = this.state.posts.filter((at) => now - at < MINUTE);
     const pending = Object.values(this.state.alerts).filter((a) =>
@@ -835,7 +870,7 @@ export class Engine {
     ).sort((a, b) => a.priority - b.priority || a.created - b.created);
     for (const a of pending) {
       if (
-        this.io.now() >= this.state.expires ||
+        this.io.now() >= deadline || this.io.now() >= this.state.expires ||
         this.state.posts.length >=
           (!this.state.expiryNotified &&
               this.state.expires - this.io.now() <= 70_000
@@ -860,6 +895,7 @@ export class Engine {
           if (
             retired(p.snapshot) || p.snapshot.turn !== a.turn ||
             (a.direct && directBlocker(p.snapshot) !== a.direct) ||
+            (a.version && directBlocker(p.snapshot)) ||
             (a.failed &&
               (p.snapshot.terminal !== "failed" ||
                 p.snapshot.runtime === "active" ||

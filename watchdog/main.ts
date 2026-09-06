@@ -101,12 +101,19 @@ function log(event: string, fields: Record<string, unknown> = {}) {
   });
   console.log(row.trimEnd());
 }
-async function save() {
+let saving = Promise.resolve();
+function save(): Promise<void> {
   const raw = JSON.stringify(run);
-  if (raw.length > 2_097_152) throw new Error("State exceeds cap");
-  await Deno.writeTextFile(`${stateFile}.tmp`, raw, { mode: 0o600 });
-  await Deno.rename(`${stateFile}.tmp`, stateFile);
+  if (raw.length > 2_097_152) {
+    return Promise.reject(new Error("State exceeds cap"));
+  }
+  saving = saving.then(async () => {
+    await Deno.writeTextFile(`${stateFile}.tmp`, raw, { mode: 0o600 });
+    await Deno.rename(`${stateFile}.tmp`, stateFile);
+  });
+  return saving;
 }
+
 if (prior && prior.expires <= started && !smoke) {
   const archive = join(dir, "summaries");
   await Deno.mkdir(archive, { recursive: true, mode: 0o700 });
@@ -343,102 +350,105 @@ try {
           observer.close();
           await observer.open();
         }
-        const discovery = await observer.discover(
-          Object.keys(run.tracked),
-          exclude,
-        );
-        engine.success("connection", "discover");
-        await engine.health(
-          "discovery",
-          discovery.reasons.includes("capacity") ? "capacity" : "",
-          "Watchdog discovery capacity reached; some sessions are not covered.",
-        );
-        const rows = discovery.rows;
-        const ordered = [
-          ...rows.slice(run.cursor % Math.max(1, rows.length)),
-          ...rows.slice(0, run.cursor % Math.max(1, rows.length)),
-        ];
-        ordered.sort((a, b) =>
-          Number(
-            (b.status?.activeFlags ?? []).some((f: string) =>
-              ["waitingOnApproval", "waitingOnUserInput"].includes(f)
-            ),
-          ) - Number((a.status?.activeFlags ?? []).some((f: string) =>
-            ["waitingOnApproval", "waitingOnUserInput"].includes(f)
-          ))
-        );
-        let visited = 0;
-        const observed = new Map<string, { row: any; snapshot: any }>();
-        for (const row of ordered) {
-          if (
-            stopping || Date.now() - tickStart >= 45_000 ||
-            run.expires - Date.now() < 10_000
-          ) break;
-          visited++;
-          const s = await observer.snapshot(row);
-          if (s.coverage?.turn === false) {
-            s.turn = run.tracked[s.id]?.turn ?? "";
-          }
-          // Baseline ordinary historical failures; retain loaded active/blocked work.
-          if (
-            !run.tracked[s.id] && s.updated < run.started &&
-            s.runtime !== "active" &&
-            !["active", "blocked"].includes(s.goal ?? "") && !s.flags.length &&
-            s.coverage?.goal && s.coverage?.turn
-          ) continue;
-          await engine.snapshot(s);
-          observed.set(s.id, { row, snapshot: s });
-        }
-        run.cursor = (run.cursor + Math.max(1, visited)) %
-          Math.max(1, rows.length);
-        if (visited < rows.length) {
-          log("observation_result", {
-            state: "partial",
-            category: "tick_deadline",
-            visited,
-            discovered: rows.length,
-          });
-        }
-        if (Date.now() - lastEvidence >= 5 * MINUTE) {
-          const entries = [...observed.values()].filter((x) =>
-            run.tracked[x.snapshot.id]
-          ).sort((a, b) =>
-            (run.tracked[a.snapshot.id].evidenceAt -
-              run.tracked[b.snapshot.id].evidenceAt) ||
-            a.snapshot.id.localeCompare(b.snapshot.id)
+        await engine.tick(async () => {
+          const discovery = await observer.discover(
+            Object.keys(run.tracked),
+            exclude,
           );
-          let tails = 0;
-          for (const { row, snapshot: s } of entries) {
+          engine.success("connection", "discover");
+          await engine.health(
+            "discovery",
+            discovery.reasons.includes("capacity") ? "capacity" : "",
+            "Watchdog discovery capacity reached; some sessions are not covered.",
+          );
+          const rows = discovery.rows;
+          const ordered = [
+            ...rows.slice(run.cursor % Math.max(1, rows.length)),
+            ...rows.slice(0, run.cursor % Math.max(1, rows.length)),
+          ];
+          ordered.sort((a, b) =>
+            Number(
+              (b.status?.activeFlags ?? []).some((f: string) =>
+                ["waitingOnApproval", "waitingOnUserInput"].includes(f)
+              ),
+            ) - Number((a.status?.activeFlags ?? []).some((f: string) =>
+              ["waitingOnApproval", "waitingOnUserInput"].includes(f)
+            ))
+          );
+          let visited = 0;
+          const observed = new Map<string, { row: any; snapshot: any }>();
+          for (const row of ordered) {
             if (
-              stopping || tails >= 16 || Date.now() - tickStart >= 45_000 ||
+              stopping || Date.now() - tickStart >= 30_000 ||
               run.expires - Date.now() < 10_000
             ) break;
-            if (
-              !engine.readDue(s.id, "evidence") || run.tracked[s.id]?.direct
-            ) continue;
-            tails++;
-            try {
-              const p = await evidence(row.path, s);
-              p.complete &&= s.coverage?.turn !== false &&
-                s.coverage?.goal !== false && s.coverage?.runtime !== false;
-              engine.success(s.id, "evidence");
-              await engine.observe(p);
-            } catch (e) {
-              engine.failure(s.id, failureOf(e, "evidence"));
+            visited++;
+            const s = await observer.snapshot(row);
+            if (s.coverage?.turn === false) {
+              s.turn = run.tracked[s.id]?.turn ?? "";
             }
+            // Baseline ordinary historical failures; retain loaded active/blocked work.
+            if (
+              !run.tracked[s.id] && s.updated < run.started &&
+              s.runtime !== "active" &&
+              !["active", "blocked"].includes(s.goal ?? "") &&
+              !s.flags.length &&
+              s.coverage?.goal && s.coverage?.turn
+            ) continue;
+            await engine.snapshot(s);
+            observed.set(s.id, { row, snapshot: s });
           }
-          lastEvidence = Date.now();
-        }
-        if (!stopping) await engine.analyzeOne(observer.deadline);
-        run.ticks++;
-        run.lastTick = Date.now();
-        log("scan", {
-          discovered: rows.length,
-          watched: Object.keys(run.tracked).length,
-          reasons: discovery.reasons,
-          calls: run.calls,
-          ticks: run.ticks,
-        });
+          run.cursor = (run.cursor + Math.max(1, visited)) %
+            Math.max(1, rows.length);
+          if (visited < rows.length) {
+            log("observation_result", {
+              state: "partial",
+              category: "tick_deadline",
+              visited,
+              discovered: rows.length,
+            });
+          }
+          if (Date.now() - lastEvidence >= 5 * MINUTE) {
+            const entries = [...observed.values()].filter((x) =>
+              run.tracked[x.snapshot.id]
+            ).sort((a, b) =>
+              (run.tracked[a.snapshot.id].evidenceAt -
+                run.tracked[b.snapshot.id].evidenceAt) ||
+              a.snapshot.id.localeCompare(b.snapshot.id)
+            );
+            let tails = 0;
+            for (const { row, snapshot: s } of entries) {
+              if (
+                stopping || tails >= 16 || Date.now() - tickStart >= 30_000 ||
+                run.expires - Date.now() < 10_000
+              ) break;
+              if (
+                !engine.readDue(s.id, "evidence") || run.tracked[s.id]?.direct
+              ) continue;
+              tails++;
+              try {
+                const p = await evidence(row.path, s);
+                p.complete &&= s.coverage?.turn !== false &&
+                  s.coverage?.goal !== false && s.coverage?.runtime !== false;
+                engine.success(s.id, "evidence");
+                await engine.observe(p);
+              } catch (e) {
+                engine.failure(s.id, failureOf(e, "evidence"));
+              }
+            }
+            lastEvidence = Date.now();
+          }
+
+          run.ticks++;
+          run.lastTick = Date.now();
+          log("scan", {
+            discovered: rows.length,
+            watched: Object.keys(run.tracked).length,
+            reasons: discovery.reasons,
+            calls: run.calls,
+            ticks: run.ticks,
+          });
+        }, observer.deadline);
       } catch (e) {
         if (!stopping && !(e && typeof e === "object" && "backoff" in e)) {
           engine.failure("connection", failureOf(e, "discover"));
@@ -446,7 +456,9 @@ try {
       }
       if (!stopping) {
         await engine.healthCheck();
-        if (Date.now() < observer.deadline) await engine.flush();
+        if (Date.now() < observer.deadline) {
+          await engine.flush(observer.deadline);
+        }
         if (Date.now() - run.summaryAt >= 5 * MINUTE) engine.summary();
         await save();
       }

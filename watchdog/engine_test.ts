@@ -535,3 +535,96 @@ Deno.test("restart rejects a backwards clock rather than resetting run credit", 
   }
   assert(rejected);
 });
+
+Deno.test("incomplete observation cannot retire a queued semantic alert", async () => {
+  const h = harness();
+  await h.put(packet());
+  await h.engine.analyzeOne();
+  await h.put({ ...packet(), complete: false, records: [] });
+  h.advance(CREDIT_MS);
+  await h.put(packet());
+  await h.engine.analyzeOne();
+  await h.engine.flush();
+  assert(h.sent.length === 1 && h.calls.length === 1);
+});
+Deno.test("stale complete evidence opens observation-health incident", async () => {
+  const h = harness();
+  await h.put(packet());
+  h.advance(11 * MINUTE);
+  await h.engine.healthCheck();
+  assert(h.engine.summary().unknown === 1 && h.state.health.observation.open);
+});
+Deno.test("slow observation cannot starve early analysis or queued approval delivery", async () => {
+  const h = harness();
+  await h.put(packet("a"));
+  const direct = packet("b");
+  direct.snapshot.flags = ["waitingOnApproval"];
+  await h.put(direct);
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => entered = resolve);
+  const analyze = h.engine.io.analyze;
+  h.engine.io.analyze = async (...args) => {
+    const result = await analyze(...args);
+    entered();
+    return result;
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await h.engine.tick(async () => {
+      await Promise.race([
+        started,
+        new Promise<void>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error("Analysis did not start before slow observation"),
+              ),
+            500,
+          );
+        }),
+      ]);
+      h.advance(20_000);
+    }, epoch + 45_000);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+
+  assert(h.calls.length === 1 && h.calls[0].at === epoch);
+  assert(
+    h.sent.some((s) => s.includes("Approval required")) && h.sent.length === 2,
+  );
+});
+Deno.test("new first-sweep candidate can use spare tick time", async () => {
+  const h = harness();
+  await h.engine.tick(async () => {
+    await h.put(packet());
+  }, epoch + 45_000);
+  assert(h.calls.length === 1 && h.sent.length === 1);
+});
+Deno.test("late analyst result cannot overwrite a new request during concurrent observation", async () => {
+  const h = harness();
+  await h.put(packet());
+  let release!: () => void;
+  let started!: () => void;
+  const begun = new Promise<void>((r) => started = r);
+  const gate = new Promise<void>((r) => release = r);
+  const base = h.engine.io.analyze;
+  h.engine.io.analyze = async (...args) => {
+    const result = await base(...args);
+    started();
+    await gate;
+    return result;
+  };
+  const pending = h.engine.analyzeOne();
+  await begun;
+  await h.put(packet("a", "I need your browser login.", 2));
+  release();
+  await pending;
+  await h.engine.flush();
+  assert(h.sent.length === 0);
+  h.advance(CREDIT_MS);
+  await h.put(packet("a", "I need your browser login.", 2));
+  await h.engine.analyzeOne();
+  await h.engine.flush();
+  assert(h.sent.length === 1);
+});

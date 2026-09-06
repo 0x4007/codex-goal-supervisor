@@ -325,3 +325,43 @@ Deno.test("successive real CLI sweeps cover more than sixteen evidence tails", a
     await Deno.remove(home, { recursive: true });
   }
 });
+
+Deno.test("oversized prior-turn record does not taint an intact current turn", async () => {
+  const file = await Deno.makeTempFile();
+  const at = new Date().toISOString();
+  const s = {
+    id: "x",
+    turn: "new",
+    runtime: "active",
+    flags: [],
+    goal: "active",
+    terminal: "inProgress",
+    label: "test",
+    updated: Date.now(),
+    parent: null,
+  };
+  try {
+    await Deno.writeTextFile(
+      file,
+      JSON.stringify({
+        timestamp: at,
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          turn_id: "old",
+          content: [{ type: "output_text", text: "x".repeat(66000) }],
+        },
+      }) + "\n" +
+        JSON.stringify({
+          timestamp: at,
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: "new" },
+        }) + "\n",
+    );
+    const p = await evidence(file, s);
+    if (!p.complete) throw new Error("Old gap tainted new turn");
+  } finally {
+    await Deno.remove(file);
+  }
+});
