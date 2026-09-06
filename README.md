@@ -165,3 +165,51 @@ python3 run_supervisor_simulation.py
 The runner creates an isolated Codex home, injects a 503, switches the proxy to
 pass-through mode, and checks that the same thread resumes and no longer has a
 terminal 5xx state.
+
+## Session attention watchdog
+
+Run a bounded, read-only monitor alongside the recovery service:
+
+```sh
+deno task watchdog --duration 6h
+```
+
+It checks the existing Codex daemon every minute, scans bounded recent evidence
+at five-minute intervals, and considers ten minutes without progress suspicious.
+Current approvals/input requests bypass the model. Ambiguous cases use the
+configured provider's `gpt-5.6-luna` with medium reasoning, at most twelve calls
+per run and two per turn/progress episode, fifteen minutes apart. No model tools
+are enabled. The monitor never starts, resumes, interrupts or edits watched
+threads. It watches active sessions and recent blocked goals; paused and
+superseded/interrupted predecessors are excluded by their lifecycle.
+
+Existing configuration is reused: `~/.codex/config.toml` (or `CODEX_HOME`), its
+provider auth helper or API key, and `~/.config/codex-nudge/topic`. The ntfy topic
+must already exist locally. Only concise blocker/action summaries are sent.
+Notifications open ChatGPT and include the thread ID; a mobile link that selects
+a local Codex thread is not verified. A topic name is not authenticated privacy.
+
+State, OS lock, reserved model calls and alert receipts live in
+`$CODEX_HOME/attention-watchdog/` (default `~/.codex/attention-watchdog/`). Restart
+an unfinished run with the same command to preserve its original expiry/budget.
+Once it has expired, the command starts a new bounded run. The lock prevents two
+watchdogs; its file may remain after exit. Alert attempts are saved before
+sending, and uncertain delivery is not automatically retried. Logs omit message
+bodies and credentials. Ordinary historical idle questions are not reactivated.
+
+`--once` performs one real check (it can notify or call the model). `--smoke`
+reads actual session metadata, sends one synthetic blocker to Luna, and sends a
+labeled ntfy test; it consumes one separate model request. Use it only when that
+live test is authorized. Normal tests use no credentials/network:
+
+```sh
+deno task watchdog:test
+deno task watchdog:check
+```
+
+Only sessions visible to this host's shared daemon are covered. Independently
+running VPS processes require evidence through their supervising sessions.
+A sleeping/offline host cannot monitor; this is not an external uptime service.
+A failed observer emits a separate coverage warning after three minutes. Three
+consecutive model failures disable further triage for that run; direct checks
+continue. The fixed call/input/output limits are usage caps, not verified prices.
