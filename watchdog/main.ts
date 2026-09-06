@@ -379,7 +379,7 @@ try {
           const observed = new Map<string, { row: any; snapshot: any }>();
           for (const row of ordered) {
             if (
-              stopping || Date.now() - tickStart >= 30_000 ||
+              stopping || Date.now() - tickStart >= 20_000 ||
               run.expires - Date.now() < 10_000
             ) break;
             visited++;
@@ -417,6 +417,7 @@ try {
               a.snapshot.id.localeCompare(b.snapshot.id)
             );
             let tails = 0;
+            let scanned = 0;
             for (const { row, snapshot: s } of entries) {
               if (
                 stopping || tails >= 16 || Date.now() - tickStart >= 30_000 ||
@@ -432,11 +433,12 @@ try {
                   s.coverage?.goal !== false && s.coverage?.runtime !== false;
                 engine.success(s.id, "evidence");
                 await engine.observe(p);
+                scanned++;
               } catch (e) {
                 engine.failure(s.id, failureOf(e, "evidence"));
               }
             }
-            lastEvidence = Date.now();
+            if (scanned > 0) lastEvidence = Date.now();
           }
 
           run.ticks++;
@@ -462,6 +464,7 @@ try {
         if (Date.now() - run.summaryAt >= 5 * MINUTE) engine.summary();
         await save();
       }
+      if (stopping) break;
       if (once) {
         stopReason = "once";
         break;

@@ -133,7 +133,7 @@ export class Observer {
     known: string[],
     exclude: Set<string>,
   ): Promise<{ rows: Row[]; partial: boolean; reasons: string[] }> {
-    const until = Math.min(this.deadline, Date.now() + 15_000);
+    const until = Math.min(this.deadline, Date.now() + 10_000);
     const rows = new Map<string, Row>();
     const loaded = await this.call("thread/loaded/list", {});
     const ids = new Set<string>([

@@ -617,7 +617,6 @@ export class Engine {
     // serialized by the runtime; session alerts still revalidate in the outbox.
     const analysis = this.analyzeOne(deadline);
     try {
-      await this.flush(deadline);
       await observe();
       await this.flush(deadline);
     } finally {

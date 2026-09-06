@@ -54,7 +54,7 @@ The requested GPT Pro design review remains pending: existing job
 retrieval, including after a cooldown. It was not resubmitted. This implementation
 follows the saved local V2 plan and does not claim a returned Pro verdict.
 
-Final check, review, and merge evidence will be recorded here after validation.
+The review disposition and final validation are recorded below; merge identity is available from the pull request history.
 
 ## Review correction and real expiry
 
@@ -92,3 +92,26 @@ The corrected real expiry run at 15:15:36 UTC discovered 29 sessions, tracked
 five, made zero model calls, and expired at 15:15:48 UTC. ntfy accepted its
 summary with receipt `GoIlnp3h5Y5V`. That run validates the scheduling correction;
 the later queue/dedup correction has focused fake-transport regression tests.
+
+
+## Final bounded review disposition
+
+Round 3 reviewed `915122e` against `main` and exited successfully with one P1
+and one P2 finding. The P1 is tracked in issue #2. The final correction caps
+discovery work at ten seconds, reserves observation time for evidence by ending
+status reads at twenty seconds, retains a due sweep when no packet was read,
+and exits before sleeping if shutdown is already requested. Notification
+delivery follows observation within the existing 45-second tick deadline;
+inference still overlaps read-only observation.
+
+All 55 tests pass. New credential-free subprocess reproductions import the
+actual CLI entry point: twelve synthetic sessions with 2.8-second virtual
+snapshots now produce evidence and candidates, and a signal during discovery
+schedules no minute sleep and preserves the signal stop reason. Type and format
+checks pass. No fourth Codex review was run; the last correction is verified by
+focused primary-agent regressions rather than a new independent review verdict.
+
+No P0/P1 finding is knowingly left unresolved. Issue #2 is closed by the V2 PR
+when merged. This remains a bounded local watchdog, with the coverage and
+external-death limitations described above; it is not a production-readiness
+claim or a claim that the separate GPT Pro research returned successfully.

@@ -365,3 +365,60 @@ Deno.test("oversized prior-turn record does not taint an intact current turn", a
     await Deno.remove(file);
   }
 });
+
+Deno.test("slow successful snapshots still leave time for real evidence reads", async () => {
+  const observerUrl = new URL("observe.ts", import.meta.url).href;
+  const mainUrl = new URL("main.ts", import.meta.url).href;
+  const code = `import {Observer} from ${JSON.stringify(observerUrl)};
+ const home=await Deno.makeTempDir();Deno.env.set("HOME",home);Deno.env.set("CODEX_HOME",home);Deno.args.push("--once");let now=Date.now();Date.now=()=>now;
+ const rows=[];for(let i=0;i<12;i++){const path=home+"/"+i+".jsonl";await Deno.writeTextFile(path,JSON.stringify({timestamp:new Date(now).toISOString(),type:"event_msg",payload:{type:"task_started",turn_id:"t"}})+"\\n");rows.push({id:"s"+i,path,updatedAt:now/1000,status:{type:"active",activeFlags:[]}});}
+ Observer.prototype.open=async function(){};Observer.prototype.discover=async function(){return{rows,partial:false,reasons:[]};};Observer.prototype.snapshot=async function(row){now+=2800;return{id:row.id,turn:"t",runtime:"active",flags:[],goal:"blocked",terminal:"inProgress",label:row.id,updated:now,parent:null,coverage:{runtime:true,goal:true,turn:true}};};
+ try{await import(${
+    JSON.stringify(mainUrl)
+  });const state=JSON.parse(await Deno.readTextFile(home+"/attention-watchdog/state.json"));if(!Object.values(state.tracked).some(t=>t.evidenceAt>0)||!Object.values(state.tracked).some(t=>t.candidate))throw new Error("Slow metadata starved evidence and candidates");if(state.calls!==0)throw new Error("Unexpected model attempt in bounded slow sweep");}finally{await Deno.remove(home,{recursive:true});}`;
+  const info = JSON.parse(
+    new TextDecoder().decode(
+      (await new Deno.Command(Deno.execPath(), {
+        args: ["info", "--json"],
+        stdout: "piped",
+        stderr: "null",
+      }).output()).stdout,
+    ),
+  );
+  const result = await new Deno.Command(Deno.execPath(), {
+    args: ["eval", code],
+    clearEnv: true,
+    env: { DENO_DIR: info.denoDir },
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  if (!result.success) throw new Error(new TextDecoder().decode(result.stderr));
+});
+Deno.test("signal during discovery never schedules a new minute sleep", async () => {
+  const code = `import {Observer} from ${
+    JSON.stringify(new URL("observe.ts", import.meta.url).href)
+  };
+ const home=await Deno.makeTempDir();Deno.env.set("HOME",home);Deno.env.set("CODEX_HOME",home);const realTimeout=globalThis.setTimeout;const sleeps=[];
+ globalThis.setTimeout=((fn,ms,...args)=>{if(ms>50000&&ms<=60000){sleeps.push(ms);return realTimeout(fn,1,...args);}return realTimeout(fn,ms,...args);});
+ Observer.prototype.open=async function(){};Observer.prototype.discover=async function(){Deno.kill(Deno.pid,"SIGTERM");await new Promise(r=>realTimeout(r,20));return{rows:[],partial:false,reasons:[]};};
+ try{await import(${
+    JSON.stringify(new URL("main.ts", import.meta.url).href)
+  });const state=JSON.parse(await Deno.readTextFile(home+"/attention-watchdog/state.json"));if(sleeps.length||state.stopped!=="signal")throw new Error("Shutdown slept or lost its reason");}finally{await Deno.remove(home,{recursive:true});}`;
+  const info = JSON.parse(
+    new TextDecoder().decode(
+      (await new Deno.Command(Deno.execPath(), {
+        args: ["info", "--json"],
+        stdout: "piped",
+        stderr: "null",
+      }).output()).stdout,
+    ),
+  );
+  const result = await new Deno.Command(Deno.execPath(), {
+    args: ["eval", code],
+    clearEnv: true,
+    env: { DENO_DIR: info.denoDir },
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  if (!result.success) throw new Error(new TextDecoder().decode(result.stderr));
+});
