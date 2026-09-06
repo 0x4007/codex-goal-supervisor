@@ -115,3 +115,14 @@ No P0/P1 finding is knowingly left unresolved. Issue #2 is closed by the V2 PR
 when merged. This remains a bounded local watchdog, with the coverage and
 external-death limitations described above; it is not a production-readiness
 claim or a claim that the separate GPT Pro research returned successfully.
+
+
+## Release runtime receipt
+
+Code candidate `179acdb` ran against the real local daemon from
+`2026-09-06T15:39:26.075Z` through `2026-09-06T15:39:38.089Z`, exited naturally
+with reason `expired`, and made zero model calls. ntfy accepted the final summary
+with receipt `257dY73EyE7x`. This verifies the final observation and
+shutdown correction through the live runtime; the earlier Luna smoke remains
+the cached provider proof. PR #3 contains the change and closes issue #2.
+GitHub reports no configured CI/deployment checks for this PR.
