@@ -180,3 +180,47 @@ Deno.test("capture excludes command text, payloads, paths, and final prose", () 
   assert(!JSON.stringify(e).includes("secret"));
   assert(!JSON.stringify(e).includes("private"));
 });
+
+Deno.test("resolved capacity is reclaimed with receipt tombstones and replay protection", () => {
+  const e = new Engine(newState(1000));
+  for (let i = 0; i < 4096; i++) {
+    const p = e.add("actor", `turn-${i}`, "stop", `stop:turn-${i}`, 1000 + i)!;
+    p.delivery = i % 2 ? "accepted" : "uncertain";
+    p.receipt = `receipt-${i}`;
+    p.sentAt = 10000 + i;
+    e.resolve(p);
+  }
+  const next = e.add("actor", "next", "approval", "request-next", 20000);
+  assert(next, "resolved detail must not block new attention");
+  assert(e.state.losses === 0);
+  assert(e.state.history!["actor:turn-0:stop:turn-0"].receipt === "receipt-0");
+  assert(e.state.history!["actor:turn-1:stop:turn-1"].delivery === "accepted");
+  const restored = new Engine(JSON.parse(JSON.stringify(e.state)));
+  assert(
+    !restored.add("actor", "turn-0", "stop", "stop:turn-0", 30000),
+    "replay of a tombstoned condition must stay suppressed",
+  );
+  for (let i = 4096; i < 14000; i++) {
+    const p = restored.add(
+      "actor",
+      `turn-${i}`,
+      "stop",
+      `stop:turn-${i}`,
+      30000 + i,
+    )!;
+    restored.resolve(p);
+  }
+  assert(Object.keys(restored.state.history!).length <= 8192);
+  assert(
+    restored.state.episodes[next!.id],
+    "unresolved condition must survive reclamation",
+  );
+});
+Deno.test("unresolved capacity is never silently evicted", () => {
+  const e = new Engine(newState(1000));
+  for (let i = 0; i < 4096; i++) {
+    e.add("actor", `turn-${i}`, "stop", `stop:turn-${i}`, 1000 + i);
+  }
+  assert(!e.add("actor", "overflow", "approval", "overflow", 10000));
+  assert(Object.keys(e.state.episodes).length === 4096 && e.state.losses === 1);
+});

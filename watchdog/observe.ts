@@ -12,6 +12,7 @@ export class Observer {
       resolve: (v: any) => void;
       reject: (e: Error) => void;
       timer: ReturnType<typeof setTimeout>;
+      cleanup: () => void;
     }
   >();
   constructor(readonly home: string) {}
@@ -46,6 +47,7 @@ export class Observer {
       const p = this.pending.get(r.id);
       if (!p) return;
       clearTimeout(p.timer);
+      p.cleanup();
       this.pending.delete(r.id);
       if (r.error) p.reject(new Error("Read-only RPC failed"));
       else p.resolve(r.result);
@@ -54,6 +56,7 @@ export class Observer {
       if (this.socket !== ws) return;
       for (const p of this.pending.values()) {
         clearTimeout(p.timer);
+        p.cleanup();
         p.reject(new Error("Observer disconnected"));
       }
       this.pending.clear();
@@ -70,7 +73,7 @@ export class Observer {
     });
     ws.send(JSON.stringify({ method: "initialized" }));
   }
-  call(method: string, params: Row): Promise<any> {
+  call(method: string, params: Row, signal?: AbortSignal): Promise<any> {
     if (
       ![
         "initialize",
@@ -80,16 +83,24 @@ export class Observer {
         "thread/turns/list",
       ].includes(method)
     ) throw new Error("Observer is read-only");
+    if (signal?.aborted) return Promise.reject(new Error("Observer deadline"));
     if (this.socket?.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error("Observer unavailable"));
     }
     const id = ++this.serial;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const cleanup = () => signal?.removeEventListener("abort", abort);
+      const abort = () => {
+        clearTimeout(timer);
+        cleanup();
         this.pending.delete(id);
         reject(new Error("Observer deadline"));
+      };
+      const timer = setTimeout(() => {
+        abort();
       }, 3000);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, timer, cleanup });
+      signal?.addEventListener("abort", abort, { once: true });
       this.socket!.send(JSON.stringify({ id, method, params }));
     });
   }
@@ -100,17 +111,21 @@ export class Observer {
       typeof v === "string"
     ).slice(0, 1024);
   }
-  async fresh(id: string): Promise<Snapshot> {
+  async fresh(id: string, signal?: AbortSignal): Promise<Snapshot> {
     await this.open();
-    const t =
-      (await this.call("thread/read", { threadId: id, includeTurns: false }))
-        .thread;
+    const t = (await this.call(
+      "thread/read",
+      { threadId: id, includeTurns: false },
+      signal,
+    ))
+      .thread;
     // Sequential reads keep four urgent + four background workers within the
     // eight-RPC limit, even while discovery and dispatch overlap.
     let goal: any, turn: any;
     let complete = true;
     try {
-      goal = (await this.call("thread/goal/get", { threadId: id })).goal;
+      goal =
+        (await this.call("thread/goal/get", { threadId: id }, signal)).goal;
     } catch {
       complete = false;
     }
@@ -120,7 +135,7 @@ export class Observer {
         limit: 1,
         sortDirection: "desc",
         itemsView: "notLoaded",
-      })).data?.[0];
+      }, signal)).data?.[0];
     } catch {
       complete = false;
     }

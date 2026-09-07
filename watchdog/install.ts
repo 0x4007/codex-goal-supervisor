@@ -3,8 +3,8 @@ import { fileURLToPath } from "node:url";
 import { VERSION } from "./policy.ts";
 const user = Deno.env.get("HOME");
 if (!user) throw new Error("HOME missing");
-if (Deno.build.os !== "darwin") {
-  throw new Error("This installer is for the Mac acceptance host");
+if (!["darwin", "linux"].includes(Deno.build.os)) {
+  throw new Error("This installer supports Mac and Linux user services");
 }
 const home = Deno.env.get("CODEX_HOME") ?? join(user, ".codex");
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -136,11 +136,40 @@ const plist =
   }</string><key>StandardErrorPath</key><string>${
     xml(join(directory, "service.log"))
   }</string></dict></plist>`;
-await Deno.writeTextFile(
-  join(directory, "com.nv.codex-attention.prepared.plist"),
-  plist,
-  { mode: 0o600 },
-);
+if (Deno.build.os === "darwin") {
+  await Deno.writeTextFile(
+    join(directory, "com.nv.codex-attention.prepared.plist"),
+    plist,
+    { mode: 0o600 },
+  );
+} else {
+  const systemdQuote = (value: string) =>
+    JSON.stringify(value.replaceAll("%", "%%").replaceAll("$", "$$"));
+  const unit = [
+    "[Unit]",
+    "Description=Codex hook attention notifications",
+    "",
+    "[Service]",
+    "Type=simple",
+    "WorkingDirectory=" + release.replaceAll("%", "%%"),
+    "ExecStart=" + args.map(systemdQuote).join(" "),
+    "Environment=" + systemdQuote("HOME=" + user),
+    "Environment=" + systemdQuote("CODEX_HOME=" + home),
+    "Restart=always",
+    "RestartSec=5",
+    "TimeoutStopSec=15",
+    "UMask=0077",
+    "",
+    "[Install]",
+    "WantedBy=default.target",
+    "",
+  ].join("\n");
+  await Deno.writeTextFile(
+    join(directory, "codex-attention.prepared.service"),
+    unit,
+    { mode: 0o600 },
+  );
+}
 await Deno.writeTextFile(
   join(directory, "prepared-release.json"),
   JSON.stringify({

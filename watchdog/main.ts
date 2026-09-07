@@ -4,19 +4,45 @@ import { Observer } from "./observe.ts";
 import { identifier, templates, validEvent, VERSION } from "./policy.ts";
 export class Pool {
   active = 0;
-  waiting: (() => void)[] = [];
   constructor(readonly limit: number) {}
-  async run<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.active >= this.limit) {
-      await new Promise<void>((r) => this.waiting.push(r));
-    }
+  tryRun<T>(fn: () => Promise<T>): Promise<T> | undefined {
+    if (this.active >= this.limit) return;
     this.active++;
-    try {
-      return await fn();
-    } finally {
-      this.active--;
-      this.waiting.shift()?.();
-    }
+    return (async () => {
+      try {
+        return await fn();
+      } finally {
+        this.active--;
+      }
+    })();
+  }
+}
+// A slow batch gets one bounded opportunity to refresh. Unchecked members are
+// explicitly unverified; they never build a FIFO queue ahead of new hooks.
+export async function revalidateBatch(
+  ids: string[],
+  pool: Pool,
+  read: (id: string, signal: AbortSignal) => Promise<void>,
+) {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve();
+    }, 3000);
+  });
+  const work: Promise<void>[] = [];
+  for (const id of new Set(ids)) {
+    const job = pool.tryRun(() => read(id, controller.signal));
+    if (job) work.push(job);
+    else break;
+  }
+  try {
+    await Promise.race([Promise.allSettled(work), deadline]);
+  } finally {
+    clearTimeout(timer!);
+    controller.abort();
   }
 }
 export function digest(
@@ -217,20 +243,22 @@ export async function main() {
       { append: true, create: true, mode: 0o600 },
     );
   }
-  const read = async (id: string, pool: Pool) =>
-    pool.run(async () => {
-      if (stopping) return;
-      try {
-        engine.observe(await observer.fresh(id), Date.now());
-      } catch {
-        engine.failed(id, Date.now());
-      }
-    });
+  const read = async (id: string, signal = AbortSignal.timeout(3000)) => {
+    if (stopping) return;
+    try {
+      engine.observe(await observer.fresh(id, signal), Date.now());
+    } catch {
+      engine.failed(id, Date.now());
+    }
+  };
   let draining = false,
     dispatching = false,
     reconciling = false,
     stopping = false;
-  let lastTick = Date.now(), nextDiscovery = 0, lastPost = 0;
+  let lastTick = Date.now(),
+    nextDiscovery = 0,
+    lastPost = 0,
+    backgroundCursor = 0;
   const startMono = performance.now();
   const jobs = new Set<Promise<unknown>>();
   const track = (job: Promise<unknown>) => {
@@ -268,7 +296,8 @@ export async function main() {
         // Coalesce routine lifecycle evidence; only attention-bearing events
         // consume urgent reads. No per-tool activity heartbeat exists.
         if (["Stop", "PermissionRequest", "PreToolUse"].includes(event.kind)) {
-          track(read(event.session, urgent));
+          const job = urgent.tryRun(() => read(event.session));
+          if (job) track(job);
         }
       }
       try {
@@ -333,7 +362,21 @@ export async function main() {
         Date.now() - a.lastEvent < 3600000
       ).map((a) => a.id);
       const candidates = [...new Set([...known, ...ids])].slice(0, 1024);
-      await Promise.all(candidates.map((id) => read(id, background)));
+      // Four background workers share a ten-second epoch, then resume fairly
+      // on the next sweep. No unbounded queue survives an epoch or shutdown.
+      const until = performance.now() + 10000;
+      let remaining = candidates.length;
+      await Promise.all(
+        Array.from({ length: 4 }, () =>
+          background.tryRun(async () => {
+            while (remaining > 0 && !stopping && performance.now() < until) {
+              remaining--;
+              const id = candidates[backgroundCursor++ % candidates.length];
+              await read(id);
+            }
+          })),
+      );
+
       state.lastReconcile = Date.now();
       engine.compact(Date.now());
       await save();
@@ -352,11 +395,8 @@ export async function main() {
       ) return;
       const candidates = engine.eligible(now).slice(0, 256);
       if (!candidates.length) return;
-      await Promise.all(
-        [...new Set(candidates.map((p) => p.actor))].map((id) =>
-          read(id, urgent)
-        ),
-      );
+      const revalidationAt = Date.now();
+      await revalidateBatch(candidates.map((p) => p.actor), urgent, read);
       if (stopping) return;
       const current = engine.eligible(Date.now()).filter((p) =>
         candidates.includes(p)
@@ -366,14 +406,15 @@ export async function main() {
       const presented = current.map((p) => ({
         ...p,
         kind: !state.actors[p.actor]?.snapshot?.complete ||
-            Date.now() - (state.actors[p.actor]?.snapshot?.at ?? 0) > 15000
+            (state.actors[p.actor]?.snapshot?.at ?? 0) < revalidationAt ||
+            (state.actors[p.actor]?.failedAt ?? 0) >= revalidationAt
           ? "unverified" as const
           : p.kind,
-      }));
+      })).filter((p) => p.delivery !== "accepted" || p.kind !== "unverified");
       const notification = crypto.randomUUID();
       const batch = digest(
         presented,
-        Deno.build.os === "darwin" ? "Mac" : "local host",
+        Deno.build.os === "darwin" ? "Mac" : "VPS",
         Date.now(),
         notification,
       );
@@ -464,13 +505,17 @@ export async function main() {
       }
       lastTick = now;
       await drain();
+      if (args.includes("--once")) {
+        await reconcile();
+        await dispatch();
+        break;
+      }
       if (now >= nextDiscovery) {
         nextDiscovery = now + 30000;
         track(reconcile());
       }
       track(dispatch());
       if (
-        args.includes("--once") ||
         (duration !== undefined && performance.now() - startMono >= duration)
       ) break;
       await new Promise((r) => setTimeout(r, 500));

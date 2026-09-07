@@ -212,3 +212,333 @@ Deno.test("runtime handles real spool, read-only RPC, exclusive lock and bounded
     await Deno.remove(home, { recursive: true });
   }
 });
+
+Deno.test("one-shot completes real reconciliation and mocked delivery before exit", async () => {
+  const home = await Deno.makeTempDir({
+    dir: "/tmp",
+    prefix: "attention-once-",
+  });
+  const { Engine, newState } = await import("./engine.ts");
+  const state = newState(Date.now() - 60000);
+  new Engine(state).add(
+    "actor",
+    "turn",
+    "stop",
+    "stop:turn",
+    Date.now() - 50000,
+  );
+  await Deno.mkdir(join(home, "attention-watchdog"));
+  await Deno.mkdir(join(home, ".config/codex-nudge"), { recursive: true });
+  await Deno.mkdir(join(home, "app-server-control"));
+  await Deno.writeTextFile(
+    join(home, "attention-watchdog/hook-state.json"),
+    JSON.stringify(state),
+  );
+  await Deno.writeTextFile(join(home, ".config/codex-nudge/topic"), "fixture");
+  const server = createServer(), sockets = new WebSocketServer({ server });
+  sockets.on("connection", (ws: any) =>
+    ws.on("message", (raw: any) => {
+      const r = JSON.parse(raw.toString());
+      if (!r.id) return;
+      const result = r.method === "initialize"
+        ? {}
+        : r.method === "thread/read"
+        ? { thread: { id: "actor", status: { type: "idle" } } }
+        : r.method === "thread/goal/get"
+        ? { goal: null }
+        : r.method === "thread/turns/list"
+        ? { data: [{ id: "turn", status: "completed" }] }
+        : { data: [] };
+      setTimeout(() => ws.send(JSON.stringify({ id: r.id, result })), 30);
+    }));
+  await new Promise<void>((r) =>
+    server.listen(join(home, "app-server-control/app-server-control.sock"), r)
+  );
+  const harness = join(home, "harness.ts");
+  await Deno.writeTextFile(
+    harness,
+    `import {main} from ${
+      JSON.stringify(new URL("main.ts", import.meta.url).href)
+    };globalThis.fetch=async(input,init)=>{if(String(input)!=="https://ntfy.sh/fixture")throw new Error("Unexpected external call");await Deno.writeTextFile(${
+      JSON.stringify(join(home, "sent.json"))
+    },JSON.stringify({body:init?.body,at:Date.now()}));return new Response(JSON.stringify({id:"once-receipt"}),{status:200});};await main();`,
+  );
+  try {
+    const result = await new Deno.Command(Deno.execPath(), {
+      args: [
+        "run",
+        "--allow-read",
+        "--allow-write",
+        "--allow-net",
+        "--allow-env",
+        "--config",
+        fileURLToPath(new URL("../deno.json", import.meta.url)),
+        harness,
+        "--once",
+      ],
+      env: { HOME: home, CODEX_HOME: home },
+      clearEnv: true,
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assert(result.success, new TextDecoder().decode(result.stderr));
+    const saved = JSON.parse(
+      await Deno.readTextFile(join(home, "attention-watchdog/hook-state.json")),
+    );
+    assert(
+      Object.values(saved.episodes).some((p: any) =>
+        p.receipt === "once-receipt" && p.delivery === "accepted"
+      ),
+    );
+    assert(
+      saved.stopped >=
+        JSON.parse(await Deno.readTextFile(join(home, "sent.json"))).at,
+    );
+    assert(saved.lastReconcile > state.started);
+  } finally {
+    for (const ws of sockets.clients) ws.terminate();
+    await new Promise<void>((r) => sockets.close(() => r()));
+    await new Promise<void>((r) => server.close(() => r()));
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("slow RPC burst delivers all 100 plus new urgent input without queue head blocking", async () => {
+  const home = await Deno.makeTempDir({
+    dir: "/tmp",
+    prefix: "attention-burst-",
+  });
+  const { Engine, newState } = await import("./engine.ts");
+  const { enqueue } = await import("./hook.ts");
+  const { capture } = await import("./policy.ts");
+  const state = newState(Date.now() - 60000), engine = new Engine(state);
+  for (let i = 0; i < 100; i++) {
+    const id = `actor-${String(i).padStart(3, "0")}`;
+    engine.actor(id, Date.now());
+    engine.add(id, "turn", "stop", "stop:turn", Date.now() - 50000);
+  }
+  await Deno.mkdir(join(home, "attention-watchdog"));
+  await Deno.mkdir(join(home, ".config/codex-nudge"), { recursive: true });
+  await Deno.mkdir(join(home, "app-server-control"));
+  await Deno.writeTextFile(
+    join(home, "attention-watchdog/hook-state.json"),
+    JSON.stringify(state),
+  );
+  await Deno.writeTextFile(join(home, ".config/codex-nudge/topic"), "fixture");
+  const server = createServer(), sockets = new WebSocketServer({ server });
+
+  sockets.on("connection", (ws: any) =>
+    ws.on("message", (raw: any) => {
+      const r = JSON.parse(raw.toString());
+      if (!r.id) return;
+      if (r.method === "thread/read") {
+        return;
+      }
+      ws.send(
+        JSON.stringify({
+          id: r.id,
+          result: r.method === "initialize" ? {} : { data: [] },
+        }),
+      );
+    }));
+  await new Promise<void>((r) =>
+    server.listen(join(home, "app-server-control/app-server-control.sock"), r)
+  );
+  const harness = join(home, "harness.ts");
+  await Deno.writeTextFile(
+    harness,
+    `import {main} from ${
+      JSON.stringify(new URL("main.ts", import.meta.url).href)
+    };import {Observer} from ${
+      JSON.stringify(new URL("observe.ts", import.meta.url).href)
+    };let active=0,maxActive=0;const call=Observer.prototype.call;Observer.prototype.call=function(...args){active++;maxActive=Math.max(maxActive,active);return call.apply(this,args).finally(()=>active--);};let count=0;globalThis.fetch=async(input,init)=>{if(String(input)!=="https://ntfy.sh/fixture")throw new Error("Unexpected external call");await Deno.writeTextFile(${
+      JSON.stringify(join(home, "sent.jsonl"))
+    },JSON.stringify({body:init?.body,at:Date.now()})+"\\n",{append:true,create:true});return new Response(JSON.stringify({id:"burst-"+(++count)}),{status:200});};await main();await Deno.writeTextFile(${
+      JSON.stringify(join(home, "rpc-metrics.json"))
+    },JSON.stringify({maxActive}));`,
+  );
+  const start = Date.now();
+  let child: Deno.ChildProcess | undefined;
+  try {
+    child = new Deno.Command(Deno.execPath(), {
+      args: [
+        "run",
+        "--allow-read",
+        "--allow-write",
+        "--allow-net",
+        "--allow-env",
+        "--config",
+        fileURLToPath(new URL("../deno.json", import.meta.url)),
+        harness,
+        "--duration",
+        "30s",
+      ],
+      env: { HOME: home, CODEX_HOME: home },
+      clearEnv: true,
+      stdout: "piped",
+      stderr: "piped",
+    }).spawn();
+    await new Promise((r) => setTimeout(r, 500));
+    await enqueue(
+      join(home, "attention-watchdog/spool"),
+      capture({
+        session_id: "new-urgent",
+        turn_id: "new-turn",
+        hook_event_name: "PermissionRequest",
+      }, Date.now() - 15000),
+    );
+    const result = await child.output();
+    child = undefined;
+    assert(result.success, new TextDecoder().decode(result.stderr));
+    const sent = (await Deno.readTextFile(join(home, "sent.jsonl"))).trim()
+      .split("\n").map((r) => JSON.parse(r));
+    const { maxActive } = JSON.parse(
+      await Deno.readTextFile(join(home, "rpc-metrics.json")),
+    );
+    console.log(
+      JSON.stringify({
+        firstMs: sent[0].at - start,
+        lastMs: sent.at(-1).at - start,
+        posts: sent.length,
+        maxActive,
+      }),
+    );
+    for (let i = 0; i < 100; i++) {
+      assert(
+        sent.some((r) =>
+          r.body.includes(`actor-${String(i).padStart(3, "0")}`)
+        ),
+        `missing actor ${i}`,
+      );
+    }
+    assert(
+      sent.some((r) => r.body.includes("new-urge")),
+      "new urgent condition was delayed behind stale batch",
+    );
+    assert(sent[0].at - start < 10000, "first delivery deadline exceeded");
+    assert(sent.at(-1).at - start < 30000, "last delivery deadline exceeded");
+    assert(
+      sent.every((r) => r.body.includes("current state could not be verified")),
+      "unreadable state must be labeled",
+    );
+    assert(maxActive <= 8, `RPC concurrency ${maxActive} exceeds eight`);
+    console.log(
+      JSON.stringify({
+        firstMs: sent[0].at - start,
+        lastMs: sent.at(-1).at - start,
+        posts: sent.length,
+        maxActive,
+      }),
+    );
+  } finally {
+    if (child) {
+      try {
+        child.kill("SIGTERM");
+        await child.status;
+      } catch {}
+    }
+    for (const ws of sockets.clients) ws.terminate();
+    await new Promise<void>((r) => sockets.close(() => r()));
+    await new Promise<void>((r) => server.close(() => r()));
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("unverified reminders retain their single allowance and do not publish", async () => {
+  const home = await Deno.makeTempDir({
+    dir: "/tmp",
+    prefix: "attention-reminder-",
+  });
+  const { Engine, newState } = await import("./engine.ts");
+  const now = Date.now();
+  const state = newState(now - 700000), engine = new Engine(state);
+  for (let i = 0; i < 5; i++) {
+    const id = `actor-${i}`;
+    const actor = engine.actor(id, now)!;
+    actor.snapshot = {
+      id,
+      turn: "turn",
+      runtime: "active",
+      flags: ["waitingOnApproval"],
+      terminal: "inProgress",
+      goal: null,
+      parent: null,
+      at: now,
+      complete: true,
+    };
+    const p = engine.add(id, "turn", "approval", "request", now - 650000)!;
+    p.disposition = "attention";
+    p.delivery = "accepted";
+    p.receipt = `original-${i}`;
+    p.sentAt = now - 610000;
+  }
+  await Deno.mkdir(join(home, "attention-watchdog"));
+  await Deno.mkdir(join(home, ".config/codex-nudge"), { recursive: true });
+  await Deno.mkdir(join(home, "app-server-control"));
+  await Deno.writeTextFile(
+    join(home, "attention-watchdog/hook-state.json"),
+    JSON.stringify(state),
+  );
+  await Deno.writeTextFile(join(home, ".config/codex-nudge/topic"), "fixture");
+  const server = createServer(), sockets = new WebSocketServer({ server });
+  sockets.on("connection", (ws: any) =>
+    ws.on("message", (raw: any) => {
+      const r = JSON.parse(raw.toString());
+      if (!r.id || r.method === "thread/read") return;
+      ws.send(
+        JSON.stringify({
+          id: r.id,
+          result: r.method === "initialize" ? {} : { data: [] },
+        }),
+      );
+    }));
+  await new Promise<void>((r) =>
+    server.listen(join(home, "app-server-control/app-server-control.sock"), r)
+  );
+  const harness = join(home, "harness.ts");
+  await Deno.writeTextFile(
+    harness,
+    `import {main} from ${
+      JSON.stringify(new URL("main.ts", import.meta.url).href)
+    };globalThis.fetch=async()=>{await Deno.writeTextFile(${
+      JSON.stringify(join(home, "unexpected-send"))
+    },"sent");return new Response(JSON.stringify({id:"unexpected"}),{status:200});};await main();`,
+  );
+  try {
+    const result = await new Deno.Command(Deno.execPath(), {
+      args: [
+        "run",
+        "--allow-read",
+        "--allow-write",
+        "--allow-net",
+        "--allow-env",
+        "--config",
+        fileURLToPath(new URL("../deno.json", import.meta.url)),
+        harness,
+        "--duration",
+        "5s",
+      ],
+      env: { HOME: home, CODEX_HOME: home },
+      clearEnv: true,
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assert(result.success, new TextDecoder().decode(result.stderr));
+    const saved = JSON.parse(
+      await Deno.readTextFile(join(home, "attention-watchdog/hook-state.json")),
+    );
+    assert(saved.posts.length === 0, "unverified reminder must not dispatch");
+    assert(
+      Object.values(saved.episodes).every((p: any) =>
+        p.delivery === "accepted" && !p.reminded &&
+        p.receipt.startsWith("original-")
+      ),
+      "existing receipt and reminder allowance must survive",
+    );
+  } finally {
+    for (const ws of sockets.clients) ws.terminate();
+    await new Promise<void>((r) => sockets.close(() => r()));
+    await new Promise<void>((r) => server.close(() => r()));
+    await Deno.remove(home, { recursive: true });
+  }
+});

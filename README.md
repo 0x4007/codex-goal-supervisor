@@ -190,17 +190,18 @@ deno task watchdog
 ```
 
 There is no default expiry or inference allowance. `--duration 6h` still gives
-an explicitly bounded run. `--once` currently has a shutdown-order defect and
-should not be used for notification acceptance; use the continuous service.
+an explicitly bounded run. `--once` completes one bounded reconciliation and
+eligible dispatch before shutting down.
 The old model-backed `--smoke` path is removed.
 
-Prepare an immutable Mac runtime, hook configuration and LaunchAgent:
+Prepare an immutable runtime, hook configuration and host-native user service:
 
 ```sh
 deno run --allow-read --allow-write --allow-env watchdog/install.ts
 ```
 
-The installer prepares files in `~/.codex/attention-watchdog/`; it does not
+The installer supports Mac and Linux. It prepares files in
+`~/.codex/attention-watchdog/`; it does not
 silently activate hooks. Install `hooks.prepared.json` as `~/.codex/hooks.json`
 after checking it preserves other hooks, then review the eight definitions
 through the normal Codex `/hooks` interface. Install
@@ -208,6 +209,12 @@ through the normal Codex `/hooks` interface. Install
 `com.nv.codex-attention.plist`, then load that exact watchdog-only job with
 `launchctl bootstrap`. On an update, unload that job, verify its prior PID has
 exited, then load the replacement. Do not restart the shared Codex daemon.
+On Linux, install `codex-attention.prepared.service` as
+`~/.config/systemd/user/codex-attention.service`, reload the user service manager,
+and enable/start `codex-attention.service`. Use the existing ntfy topic file with
+owner-only permissions. Each host must load and trust its own hook definitions;
+copying files does not prove an installation works.
+
 The source hash identifies the installed release directory. Already-running
 sessions are refresh-unverified until they emit the new hook version.
 
@@ -219,7 +226,9 @@ runtime flag are a known coverage gap.
 
 Runtime files are owner-only under `~/.codex/attention-watchdog/`:
 
-- `hook-state.json`: actor/episode identities and persistent delivery receipts.
+- `hook-state.json`: actor/episode identities and persistent delivery receipts;
+  resolved detail is reclaimed under capacity pressure, with up to 8,192 receipt
+  and deduplication tombstones kept separately from unresolved conditions.
 - `hook-events.jsonl`: bounded lifecycle and delivery audit.
 - `status.json`: current coverage, capture loss and delivery health.
 - `spool/`: up to 4,096 event slots, each at most 8 KiB; failed writer claims
@@ -228,13 +237,15 @@ Runtime files are owner-only under `~/.codex/attention-watchdog/`:
   not imported as new alerts.
 
 Posts contain only local host type, session-ID prefixes, fixed categories and
-an opaque notice ID. Full local mappings remain in the state file. Posts are
+an opaque notice ID. Full local mappings remain in the state file. Urgent batch revalidation has a three-second deadline and no queued backlog;
+unchecked members are labeled unverified. Background reads use four workers and
+a bounded rotating sweep. Posts are
 batched under 3 KiB and limited to three per minute. Accepted and uncertain
 attempts survive restart without blind retries; definite transient rejection
 gets at most two retries. One verified unresolved-condition reminder is allowed
 after ten minutes. Known send counts are not the ntfy account remaining quota.
 
-This is a Mac prototype. Phone display and locating the exact session require
+This is a Mac/Linux prototype. Phone display and locating the exact session require
 user acceptance. The generic click URL opens ChatGPT; it is not a verified
 session deep link. Sleeping/offline Mac, remote workers, and opaque hangs have
 no complete coverage. Capture/observation health is visible locally; external
