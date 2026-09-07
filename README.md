@@ -1,4 +1,8 @@
-# Codex goal 5xx supervisor
+# Codex tools
+
+The V2 notification monitor is [hook-based](#hook-driven-attention-monitor-v2).
+The managed-session harness and Python 5xx recovery supervisor below are separate
+tools, not earlier versions of the notification monitor.
 
 ## Managed interactive sessions
 
@@ -175,9 +179,9 @@ above is unchanged.
 Codex lifecycle hooks write small, private events to a bounded local spool.
 The consumer checks the affected session through read-only app-server methods,
 then sends fixed-template alerts to the existing ntfy topic. It makes no model
-calls and never reads historical conversation transcripts. A 30-second check of
-loaded and hook-registered actors covers missed terminal events; it does not
-search old sessions. Normal child handoffs stay quiet. Pending approvals/input,
+calls and never reads historical conversation transcripts. It does not discover
+sessions or run periodic session checks. Only hooks and pending notification
+deadlines trigger reads of the affected session. Normal child handoffs stay quiet. Pending approvals/input,
 failed turns, and stopped blocked goals are separate conditions. Ambiguous root
 stops receive an honest review notice after 45 seconds; deterministic evidence
 alone cannot classify every ordinary final reply, so some normal completions
@@ -190,8 +194,8 @@ deno task watchdog
 ```
 
 There is no default expiry or inference allowance. `--duration 6h` still gives
-an explicitly bounded run. `--once` completes one bounded reconciliation and
-eligible dispatch before shutting down.
+an explicitly bounded run. `--once` drains hook events and awaits eligible
+dispatch before shutting down.
 The old model-backed `--smoke` path is removed.
 
 Prepare an immutable runtime, hook configuration and host-native user service:
@@ -233,13 +237,11 @@ Runtime files are owner-only under `~/.codex/attention-watchdog/`:
 - `status.json`: current coverage, capture loss and delivery health.
 - `spool/`: up to 4,096 event slots, each at most 8 KiB; failed writer claims
   remain visible rather than risking deletion of live writers.
-- `v2-cutover-state.json`: archived old monitor state; old idle conditions are
-  not imported as new alerts.
 
 Posts contain only local host type, session-ID prefixes, fixed categories and
 an opaque notice ID. Full local mappings remain in the state file. Urgent batch revalidation has a three-second deadline and no queued backlog;
-unchecked members are labeled unverified. Background reads use four workers and
-a bounded rotating sweep. Posts are
+unchecked members are labeled unverified. Reads use at most four concurrent
+RPC slots. Posts are
 batched under 3 KiB and limited to three per minute. Accepted and uncertain
 attempts survive restart without blind retries; definite transient rejection
 gets at most two retries. One verified unresolved-condition reminder is allowed
@@ -249,7 +251,8 @@ This is a Mac/Linux prototype. Phone display and locating the exact session requ
 user acceptance. The generic click URL opens ChatGPT; it is not a verified
 session deep link. Sleeping/offline Mac, remote workers, and opaque hangs have
 no complete coverage. Capture/observation health is visible locally; external
-host-death monitoring is not implemented. Optional model triage is deferred.
+host-death monitoring is not implemented. Missing hooks can mean missed alerts;
+there is no periodic reconciliation fallback and no model triage.
 
 ```sh
 deno task watchdog:test
@@ -259,6 +262,5 @@ deno task watchdog:check
 Tests use synthetic events, actual hook subprocesses and a fake local daemon;
 they do not call ntfy or a model. See
 [the implementation evidence](docs/watchdog-hooks-acceptance-2026-09-07.md)
-and [the broader design](docs/watchdog-hooks-redesign-2026-09-07.md). The older
-[V2 scanner evidence](docs/watchdog-v2-acceptance.md) is historical, not evidence
-for the hook implementation.
+and [the V2 architecture](docs/watchdog-hooks-redesign-2026-09-07.md).
+The removed V1 scanner is available only in Git history.
