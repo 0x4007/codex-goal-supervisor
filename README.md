@@ -166,81 +166,88 @@ The runner creates an isolated Codex home, injects a 503, switches the proxy to
 pass-through mode, and checks that the same thread resumes and no longer has a
 terminal 5xx state.
 
-## Session attention watchdog
+## Hook-driven attention monitor (V2)
 
-Run a bounded, read-only monitor alongside the recovery service:
+The notification implementation is in [watchdog/](watchdog/). It replaces the
+former timer-driven attention scanner. The separate Python 5xx recovery tool
+above is unchanged.
+
+Codex lifecycle hooks write small, private events to a bounded local spool.
+The consumer checks the affected session through read-only app-server methods,
+then sends fixed-template alerts to the existing ntfy topic. It makes no model
+calls and never reads historical conversation transcripts. A 30-second check of
+loaded and hook-registered actors covers missed terminal events; it does not
+search old sessions. Normal child handoffs stay quiet. Pending approvals/input,
+failed turns, and stopped blocked goals are separate conditions. Ambiguous root
+stops receive an honest review notice after 45 seconds; deterministic evidence
+alone cannot classify every ordinary final reply, so some normal completions
+will also receive that notice.
+
+Run continuously with the existing command:
 
 ```sh
-deno task watchdog --duration 6h
+deno task watchdog
 ```
 
-It checks the existing Codex daemon every minute, scans bounded recent evidence
-at five-minute intervals, and considers ten minutes without progress suspicious.
-Current approvals/input requests bypass the model. Ambiguous cases use the
-configured provider's `gpt-5.6-luna` with medium reasoning. V2 makes one credit
-available immediately and replenishes it fifteen minutes after each reserved
-attempt. Credits do not accumulate: at most 24 attempts fit in a six-hour run.
-Failed or uncertain requests consume their reserved attempt. Unchanged semantic
-evidence is not repeatedly analyzed; a stated expected wait can receive one
-bounded recheck. A fair queue gives older eligible sessions the next credit.
-No model tools are enabled. The monitor never starts, resumes, interrupts or
-edits watched threads. Active work and blocked goals remain watched; explicit
-paused, archived, completed or interrupted work retires. Missing data does not
-prove retirement. Distinct requests within one turn can notify separately.
+There is no default expiry or inference allowance. `--duration 6h` still gives
+an explicitly bounded run. `--once` currently has a shutdown-order defect and
+should not be used for notification acceptance; use the continuous service.
+The old model-backed `--smoke` path is removed.
 
+Prepare an immutable Mac runtime, hook configuration and LaunchAgent:
 
-Existing configuration is reused: `~/.codex/config.toml` (or `CODEX_HOME`), its
-provider auth helper or API key, and `~/.config/codex-nudge/topic`. The ntfy topic
-must already exist locally. Only concise blocker/action summaries are sent.
-Notifications open ChatGPT and include the thread ID; a mobile link that selects
-a local Codex thread is not verified. A topic name is not authenticated privacy.
+```sh
+deno run --allow-read --allow-write --allow-env watchdog/install.ts
+```
 
-State, OS lock, reserved model calls and alert receipts live in
-`$CODEX_HOME/attention-watchdog/` (default `~/.codex/attention-watchdog/`). Restart
-an unfinished run with the same command to preserve its original expiry/budget.
-Once it has expired, the command starts a new bounded run. The lock prevents two
-watchdogs; its file may remain after exit. Alert attempts are saved before
-sending, and uncertain delivery is not automatically retried. Logs omit message
-bodies and credentials. Ordinary historical idle questions are not reactivated.
+The installer prepares files in `~/.codex/attention-watchdog/`; it does not
+silently activate hooks. Install `hooks.prepared.json` as `~/.codex/hooks.json`
+after checking it preserves other hooks, then review the eight definitions
+through the normal Codex `/hooks` interface. Install
+`com.nv.codex-attention.prepared.plist` in `~/Library/LaunchAgents/` as
+`com.nv.codex-attention.plist`, then load that exact watchdog-only job with
+`launchctl bootstrap`. On an update, unload that job, verify its prior PID has
+exited, then load the replacement. Do not restart the shared Codex daemon.
+The source hash identifies the installed release directory. Already-running
+sessions are refresh-unverified until they emit the new hook version.
 
-`--once` performs one real check (it can notify or call the model). `--smoke`
-reads actual session metadata, sends one synthetic blocker to Luna, and sends a
-labeled ntfy test; it consumes one separate model request. Use it only when that
-live test is authorized. Normal tests use synthetic evidence and a local fake Unix-socket daemon, with no model or ntfy traffic:
+The monitor preserves unrelated hooks and never writes trust hashes. There are
+no general PostToolUse heartbeats. Tool-specific input hooks remain uninstalled
+until their real TUI mapping and response lifecycle are proved; synchronous
+pending-input flags are still reconciled. Optional async questions without a
+runtime flag are a known coverage gap.
+
+Runtime files are owner-only under `~/.codex/attention-watchdog/`:
+
+- `hook-state.json`: actor/episode identities and persistent delivery receipts.
+- `hook-events.jsonl`: bounded lifecycle and delivery audit.
+- `status.json`: current coverage, capture loss and delivery health.
+- `spool/`: up to 4,096 event slots, each at most 8 KiB; failed writer claims
+  remain visible rather than risking deletion of live writers.
+- `v2-cutover-state.json`: archived old monitor state; old idle conditions are
+  not imported as new alerts.
+
+Posts contain only local host type, session-ID prefixes, fixed categories and
+an opaque notice ID. Full local mappings remain in the state file. Posts are
+batched under 3 KiB and limited to three per minute. Accepted and uncertain
+attempts survive restart without blind retries; definite transient rejection
+gets at most two retries. One verified unresolved-condition reminder is allowed
+after ten minutes. Known send counts are not the ntfy account remaining quota.
+
+This is a Mac prototype. Phone display and locating the exact session require
+user acceptance. The generic click URL opens ChatGPT; it is not a verified
+session deep link. Sleeping/offline Mac, remote workers, and opaque hangs have
+no complete coverage. Capture/observation health is visible locally; external
+host-death monitoring is not implemented. Optional model triage is deferred.
 
 ```sh
 deno task watchdog:test
 deno task watchdog:check
 ```
 
-Only sessions visible to this host's shared daemon are covered. Independently
-running VPS processes require evidence through their supervising sessions.
-A sleeping/offline host cannot monitor; this is not an external uptime service.
-V2 tracks observation, analysis and delivery health separately. Failed reads
-receive per-source backoff and a coverage warning after three minutes; an
-unreadable goal field does not hide a current approval flag. Overdue analysis
-queues generate a coalesced delay notice. Temporary provider failures enter
-recoverable, credit-limited backoff; authentication/configuration rejection
-requires repair and an explicit restart. Direct checks remain available.
-
-`events.jsonl` records decision/skip reasons, source failures, analysis attempts
-and returned usage, health transitions, and notification acceptance/rejection or
-uncertainty. Every five minutes it writes a coverage summary. Logs rotate at
-10 MiB with two older files; the last ten expired run summaries are retained.
-State V2 preserves the original deadline and credit time across restarts. V1
-unfinished state receives an explicit cutover notice and no immediate free
-credit. Invalid state is rejected rather than silently reset.
-
-The outbox limits posts to three per minute, coalesces monitoring-health bursts
-and bounded bursts with a known parent session, and rechecks every member before
-sending. Each child identity keeps its own ledger entry and shares the receipt.
-A canceled alert that never reached dispatch can be queued again; accepted or
-uncertain sends remain deduplicated. A definite rate-limit rejection
-can receive two delayed retries; an uncertain POST is never blindly repeated.
-Service acceptance is not proof that an iPhone displayed or read a notification.
-A final summary is attempted before normal expiry. Sudden process or machine
-death cannot be reported reliably by that same process. Usage caps are not
-verified dollar prices.
-
-See [V2 acceptance evidence](docs/watchdog-v2-acceptance.md) for the bounded
-replay, runtime checks, and known coverage limits.
+Tests use synthetic events, actual hook subprocesses and a fake local daemon;
+they do not call ntfy or a model. See
+[the implementation evidence](docs/watchdog-hooks-acceptance-2026-09-07.md)
+and [the broader design](docs/watchdog-hooks-redesign-2026-09-07.md). The older
+[V2 scanner evidence](docs/watchdog-v2-acceptance.md) is historical, not evidence
+for the hook implementation.

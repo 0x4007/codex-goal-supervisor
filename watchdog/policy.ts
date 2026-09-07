@@ -1,140 +1,76 @@
-export type Snapshot = {
-  id: string;
-  turn: string;
-  runtime: string;
-  flags: string[];
-  goal: string | null;
-  terminal: string | null;
-  label: string;
-  updated: number;
-  parent: string | null;
-  coverage?: { runtime: boolean; goal: boolean; turn: boolean };
-  observedAt?: number;
-  archived?: boolean;
-};
-export type Evidence = {
+export const VERSION = "hooks-1";
+export const KINDS = [
+  "SessionStart",
+  "SessionEnd",
+  "UserPromptSubmit",
+  "PermissionRequest",
+  "Stop",
+  "Interrupt",
+  "SubagentStart",
+  "SubagentStop",
+  "PreToolUse",
+  "PostToolUse",
+] as const;
+export type Kind = typeof KINDS[number];
+export type Event = {
+  version: typeof VERSION;
   id: string;
   at: number;
-  kind: string;
-  text: string;
+  kind: Kind;
+  session: string;
+  turn: string | null;
+  child: string | null;
+  request: string | null;
+  tool: string | null;
 };
-export type Packet = {
-  snapshot: Snapshot;
-  records: Evidence[];
+export type Snapshot = {
+  id: string;
+  turn: string | null;
+  runtime: string;
+  flags: string[];
+  terminal: string | null;
+  goal: string | null;
+  parent: string | null;
+  at: number;
   complete: boolean;
-  silenceMs: number;
-  repeatedFailures: number;
-  logVersion?: string;
 };
-export type Verdict = {
-  classification:
-    | "expected_wait"
-    | "needs_agent_correction"
-    | "needs_user"
-    | "unknown";
-  confidence: "low" | "medium" | "high";
-  evidence_ids: string[];
-  blocker: string;
-  requested_action: string;
+export type Category =
+  | "approval"
+  | "input"
+  | "failed"
+  | "blocked"
+  | "stop"
+  | "unverified";
+export const templates: Record<Category, string> = {
+  approval: "Approval is pending.",
+  input: "Input requested; work may continue.",
+  failed: "Turn failed; review session.",
+  blocked: "Goal reports blocked; agent is not running.",
+  stop: "Turn stopped; completion was not established. Review session.",
+  unverified: "Attention signal observed; current state could not be verified.",
 };
-export function redact(value: string, max = 400): string {
-  return value
-    .replace(/https?:\/\/\S+/gi, "[URL]")
-    .replace(
-      /(?:Bearer\s+|(?:token|password|secret|api[_-]?key)\s*[:=]\s*)[^\s,;]+/gi,
-      "[credential]",
-    )
-    .replace(/[A-Za-z0-9_+/=-]{48,}/g, "[opaque value]")
-    .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, "[email]")
-    .slice(0, max);
+export const identifier = (x: unknown): x is string =>
+  typeof x === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(x);
+export function capture(x: Record<string, unknown>, now = Date.now()): Event {
+  if (!identifier(x.session_id) || !KINDS.includes(x.hook_event_name as Kind)) {
+    throw new Error("Invalid hook identity");
+  }
+  return {
+    version: VERSION,
+    id: crypto.randomUUID(),
+    at: now,
+    kind: x.hook_event_name as Kind,
+    session: x.session_id,
+    turn: identifier(x.turn_id) ? x.turn_id : null,
+    child: identifier(x.agent_id) ? x.agent_id : null,
+    request: identifier(x.tool_use_id) ? x.tool_use_id : null,
+    tool: identifier(x.tool_name) ? x.tool_name : null,
+  };
 }
-export function retired(s: Snapshot): boolean {
-  if (s.archived) return true;
-  if (
-    s.goal === "paused" || s.goal === "complete" || s.goal === "completed" ||
-    s.terminal === "interrupted"
-  ) return true;
-  if (
-    s.coverage && (!s.coverage.runtime || !s.coverage.goal || !s.coverage.turn)
-  ) return false;
-  return s.goal === "paused" || s.goal === "complete" ||
-    s.goal === "completed" ||
-    s.terminal === "interrupted" ||
-    (s.runtime !== "active" && !["active", "blocked"].includes(s.goal ?? "") &&
-      s.terminal !== "failed" && s.flags.length === 0);
-}
-export function directBlocker(s: Snapshot): string | null {
-  if (retired(s)) return null;
-  if (s.flags.includes("waitingOnApproval")) return "approval";
-  if (s.flags.includes("waitingOnUserInput")) return "user-input";
-  return null;
-}
-export function suspected(p: Packet): boolean {
-  if (retired(p.snapshot)) return false;
-  if (p.snapshot.goal === "blocked") return true;
-  if (!p.complete) return false;
-  return p.silenceMs >= 600_000 || p.repeatedFailures >= 3 ||
-    (p.snapshot.terminal === "failed" && p.silenceMs >= 300_000) ||
-    p.records.some((r) =>
-      r.kind === "assistant" &&
-      /(?:need your|please (?:approve|sign|log|open|select)|blocked on|requires your|may I)/i
-        .test(r.text)
+export function validEvent(x: Event): boolean {
+  return x?.version === VERSION && identifier(x.id) && identifier(x.session) &&
+    Number.isFinite(x.at) && KINDS.includes(x.kind) &&
+    [x.turn, x.child, x.request, x.tool].every((v) =>
+      v === null || identifier(v)
     );
-}
-export function validateVerdict(v: unknown, p: Packet): Verdict {
-  if (!v || typeof v !== "object") throw new Error("Invalid verdict");
-  const x = v as Record<string, unknown>;
-  const keys = [
-    "classification",
-    "confidence",
-    "evidence_ids",
-    "blocker",
-    "requested_action",
-  ];
-  if (Object.keys(x).length !== keys.length || keys.some((k) => !(k in x))) {
-    throw new Error("Invalid verdict fields");
-  }
-  if (
-    !["expected_wait", "needs_agent_correction", "needs_user", "unknown"]
-      .includes(String(x.classification)) ||
-    !["low", "medium", "high"].includes(String(x.confidence)) ||
-    typeof x.blocker !== "string" || x.blocker.length > 240 ||
-    typeof x.requested_action !== "string" || x.requested_action.length > 240 ||
-    !Array.isArray(x.evidence_ids) || x.evidence_ids.length > 4 ||
-    !x.evidence_ids.every((id) =>
-      typeof id === "string" && p.records.some((r) => r.id === id)
-    )
-  ) {
-    throw new Error("Invalid verdict values");
-  }
-  return x as Verdict;
-}
-export function eligible(v: Verdict, p: Packet): boolean {
-  if (
-    !p.complete || retired(p.snapshot) || v.confidence !== "high" ||
-    !v.evidence_ids.length
-  ) return false;
-  const cited = p.records.filter((r) => v.evidence_ids.includes(r.id));
-  // A model judgement cannot turn silence into a verified need for user action.
-  return v.classification === "needs_user" &&
-    Boolean(v.requested_action.trim()) &&
-    (cited.some((r) =>
-      r.kind === "assistant" &&
-      /(?:need|please|blocked|cannot|can't|permission|approv|access|sign.in|log.in|missing|select|choose|provide)/i
-        .test(r.text)
-    ));
-}
-export function sameEpoch(a: Snapshot, b: Snapshot): boolean {
-  return a.id === b.id && a.turn === b.turn && a.updated === b.updated &&
-    a.goal === b.goal && a.runtime === b.runtime && !retired(b);
-}
-export async function fingerprint(value: string): Promise<string> {
-  const bytes = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(value),
-  );
-  return Array.from(
-    new Uint8Array(bytes),
-    (x) => x.toString(16).padStart(2, "0"),
-  ).join("").slice(0, 24);
 }
