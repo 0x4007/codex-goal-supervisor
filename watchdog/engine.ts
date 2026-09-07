@@ -43,6 +43,10 @@ export type State = {
   seen: Record<string, number>;
   posts: number[];
   legacyReceipts: unknown[];
+  history?: Record<
+    string,
+    Pick<Episode, "delivery" | "receipt" | "sentAt" | "created" | "disposition">
+  >;
   losses: number;
   lastEvent: number;
   lastReconcile: number;
@@ -66,7 +70,9 @@ export function newState(now: number): State {
   };
 }
 export class Engine {
-  constructor(readonly state: State) {}
+  constructor(readonly state: State) {
+    state.history ??= {};
+  }
   actor(id: string, now: number): Actor | undefined {
     if (this.state.actors[id]) return this.state.actors[id];
     if (Object.keys(this.state.actors).length >= 1024) {
@@ -91,6 +97,10 @@ export class Engine {
   ): Episode | undefined {
     const id = `${actor}:${turn ?? "unknown"}:${source}`;
     if (this.state.episodes[id]) return this.state.episodes[id];
+    if (this.state.history![id]) return;
+    if (Object.keys(this.state.episodes).length >= 4096) {
+      this.reclaim(now, true);
+    }
     if (Object.keys(this.state.episodes).length >= 4096) {
       this.state.losses++;
       return;
@@ -297,12 +307,7 @@ export class Engine {
     }).sort((a, b) => a.due - b.due);
   }
   compact(now: number) {
-    for (const [id, p] of Object.entries(this.state.episodes)) {
-      if (
-        !["candidate", "attention"].includes(p.disposition) &&
-        now - p.created > 7 * 86400000
-      ) delete this.state.episodes[id];
-    }
+    this.reclaim(now, false);
     const seen = Object.entries(this.state.seen).sort((a, b) => b[1] - a[1]);
     this.state.seen = Object.fromEntries(seen.slice(0, 8192));
     for (const [id, a] of Object.entries(this.state.actors)) {
@@ -312,5 +317,31 @@ export class Engine {
       ) delete this.state.actors[id];
     }
     this.state.posts = this.state.posts.filter((t) => now - t < 86400000);
+  }
+  private reclaim(now: number, pressure: boolean) {
+    const resolved = Object.values(this.state.episodes).filter((p) =>
+      !["candidate", "attention"].includes(p.disposition) &&
+      p.delivery !== "dispatching"
+    ).sort((a, b) => a.created - b.created);
+    let count = Object.keys(this.state.episodes).length;
+    for (const p of resolved) {
+      if (now - p.created <= 7 * 86400000 && (!pressure || count < 3584)) {
+        continue;
+      }
+      const { delivery, receipt, sentAt, created, disposition } = p;
+      this.state.history![p.id] = {
+        delivery,
+        receipt,
+        sentAt,
+        created,
+        disposition,
+      };
+      delete this.state.episodes[p.id];
+      count--;
+    }
+    this.state.history = Object.fromEntries(
+      Object.entries(this.state.history!)
+        .sort((a, b) => b[1].created - a[1].created).slice(0, 8192),
+    );
   }
 }

@@ -73,3 +73,44 @@ Three P2 findings were substantiated: one-shot shutdown ordering, delayed batch
 revalidation under degraded RPC, and resolved-episode capacity pressure. Under
 the configured review policy, P2-only findings are tracked instead of starting
 a correction round. These are unresolved prototype defects, not passed gates.
+
+## Review-defect repair and two-host rollout
+
+The follow-up implements issues #4, #5 and #6 and adds a Linux user-service
+preparation path. The original prototype limits above are historical where
+superseded by this section; optional input-tool mapping, model triage and external
+host-death detection remain outside this repair.
+
+- `--once` awaits bounded reconciliation and eligible dispatch before shutdown.
+- Urgent revalidation has a three-second budget and does not enqueue all actors
+  ahead of new hooks. Unchecked members receive an unverified-state template.
+  Background observation has four workers and bounded rotating epochs.
+- Resolved detail is reclaimed before the 4,096-episode cap rejects a new
+  condition. A separate bounded set of 8,192 receipt/deduplication tombstones
+  preserves recent replay protection; unresolved and in-flight records are not
+  silently evicted.
+- The same installer prepares launchd on Mac and a systemd user unit on Linux.
+  Service activation and normal hook trust remain host-specific verification.
+
+Mac fresh test execution: 19 passed. Evidence reference:
+`b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/8f6e2775-a7af-49be-bb4c-34485acc0a2b`.
+The runtime regression includes 100 slow-RPC conditions and one later urgent
+request, real client concurrency measurement, and locally captured notification
+bodies. No ntfy or model calls occur in this suite. The elapsed deadline includes
+two three-second revalidation budgets, 20-second send pacing and scheduling
+allowance. The one-shot regression proves the send is completed before shutdown.
+
+Final repair verification: 20 passed, zero failed, actual Mac execution in the
+canonical worktree. Evidence:
+`b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/f8919690-e6bf-4303-982d-d4b58e0f8853`.
+Slow-RPC first delivery was 3,312 ms; the later urgent delivery was 26,495 ms,
+including send pacing, with at most eight pending client RPCs.
+Unverified reminders preserve the original receipt and reminder allowance.
+
+Repair review round 1 found invalid systemd WorkingDirectory quoting (P1) and
+unverified reminders consuming their allowance (P2). Both were fixed. Round 2,
+`codex review --uncommitted`, found no actionable regressions. Logs are stored
+outside Git under `~/.codex/attention-watchdog/hooks-repair-review*.log`.
+Native VPS `systemd-analyze --user verify` passed for the corrected unit; Mac
+`plutil -lint` passed. Activation and live receipts are recorded separately in
+host-local installed-acceptance records after deployment.
