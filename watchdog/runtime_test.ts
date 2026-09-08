@@ -104,7 +104,8 @@ Deno.test("runtime handles real spool, read-only RPC, exclusive lock and bounded
         ? {
           thread: {
             id: "actor",
-            name: "Example task",
+            name: null,
+            preview: "Example task",
             status: { type: "idle" },
             parentThreadId: null,
           },
@@ -245,7 +246,14 @@ Deno.test("one-shot completes hook-episode revalidation and delivery before exit
       const result = r.method === "initialize"
         ? {}
         : r.method === "thread/read"
-        ? { thread: { id: "actor", status: { type: "idle" } } }
+        ? {
+          thread: {
+            id: "actor",
+            name: null,
+            preview: "Preview fallback task",
+            status: { type: "idle" },
+          },
+        }
         : r.method === "thread/goal/get"
         ? { goal: null }
         : r.method === "thread/turns/list"
@@ -297,6 +305,8 @@ Deno.test("one-shot completes hook-episode revalidation and delivery before exit
         JSON.parse(await Deno.readTextFile(join(home, "sent.json"))).at,
     );
     assert(saved.actors.actor.snapshot.complete);
+    const sent = JSON.parse(await Deno.readTextFile(join(home, "sent.json")));
+    assert(sent.body.includes("Preview fallback task — Turn stopped"));
   } finally {
     for (const ws of sockets.clients) ws.terminate();
     await new Promise<void>((r) => sockets.close(() => r()));
