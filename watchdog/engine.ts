@@ -276,7 +276,6 @@ export class Engine {
   eligible(now: number): Episode[] {
     return Object.values(this.state.episodes).filter((p) => {
       if (!["candidate", "attention"].includes(p.disposition)) return false;
-      const a = this.state.actors[p.actor];
       if (p.disposition === "candidate" && now >= p.due) {
         if (["approval", "input"].includes(p.kind) && now < p.created + 15000) {
           return false;
@@ -288,12 +287,7 @@ export class Engine {
       }
       if (
         p.delivery === "accepted" && !p.reminded &&
-        now >= (p.sentAt ?? now) + 600000 && a?.snapshot &&
-        (p.kind === "approval"
-          ? a.snapshot.flags.includes("waitingOnApproval")
-          : p.kind === "input"
-          ? a.snapshot.flags.includes("waitingOnUserInput")
-          : a.snapshot.goal === "blocked" || a.snapshot.terminal === "failed")
+        now >= (p.sentAt ?? now) + 600000
       ) {
         return true;
       }

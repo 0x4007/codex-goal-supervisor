@@ -27,6 +27,9 @@ Ordinary root stops have a 45-second continuation grace. Approval signals use
 runtime flags where available, with an explicit unverified notice if current
 state cannot be read. Urgent revalidation has a three-second budget and at most
 four concurrent RPC calls. Unverified reminders do not consume their allowance.
+Reminder deadlines trigger reads even without an initial snapshot. Attempted
+reminders receive a persisted 20-second retry delay, leaving unchecked actors
+eligible for the next batch. Publishing still requires a fresh pending condition.
 Delivery pacing, retry deadlines, and a single reminder for a still-pending
 condition operate only on existing episodes. These deadlines do not discover
 additional sessions. `--once` drains hooks and awaits eligible dispatch.

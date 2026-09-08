@@ -51,3 +51,23 @@ actors can starve later reminder checks. They are tracked in the removal PR;
 they are not fixed or verified. The review reproduced both cases with evidence
 `b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/29a9e4c7-f84b-4669-bcce-778a487f1689`.
 The final dependency-only removal was type-checked after review.
+
+## Reminder recovery repair
+
+The follow-up for issues #9 and #10 removes the cached-snapshot prerequisite
+from reminder deadlines. Publishing still requires fresh, complete evidence
+that the condition remains pending. Each attempted reminder receives a persisted
+20-second read-retry delay without consuming its reminder allowance, so unchecked
+actors can use the next free RPC slots. No discovery or periodic scan is added.
+
+The runtime regression seeds five accepted notices without snapshots, leaves
+four actors unreadable and exposes a pending approval on the fifth. It checks
+one verified reminder, exactly five reads, preserved failed-actor receipts and
+allowances, and persisted retry deadlines after shutdown, with no new hooks.
+
+Repair validation: 21 passed, zero failed, fresh Mac execution:
+`b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/0f405b5b-c7b9-47ab-bacd-1351d8c60c91`.
+Local `codex review --uncommitted` exited 0 with no actionable bugs found.
+Review log: `~/.codex/attention-watchdog/reminder-recovery-review-2026-09-08.log`.
+The reviewer also executed both focused reminder tests successfully, reference
+`b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/afdbc367-a575-4ac0-af8f-509185ca9554`.
