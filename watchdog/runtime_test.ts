@@ -104,6 +104,7 @@ Deno.test("runtime handles real spool, read-only RPC, exclusive lock and bounded
         ? {
           thread: {
             id: "actor",
+            name: "Example task",
             status: { type: "idle" },
             parentThreadId: null,
           },
@@ -315,7 +316,18 @@ Deno.test("slow RPC burst delivers all 100 plus new urgent input without queue h
   const state = newState(Date.now() - 60000), engine = new Engine(state);
   for (let i = 0; i < 100; i++) {
     const id = `actor-${String(i).padStart(3, "0")}`;
-    engine.actor(id, Date.now());
+    engine.actor(id, Date.now())!.snapshot = {
+      id,
+      title: id,
+      turn: "turn",
+      runtime: "idle",
+      flags: [],
+      terminal: "completed",
+      goal: null,
+      parent: null,
+      at: Date.now(),
+      complete: true,
+    };
     engine.add(id, "turn", "stop", "stop:turn", Date.now() - 50000);
   }
   await Deno.mkdir(join(home, "attention-watchdog"));
@@ -413,7 +425,7 @@ Deno.test("slow RPC burst delivers all 100 plus new urgent input without queue h
       );
     }
     assert(
-      sent.some((r) => r.body.includes("new-urge")),
+      sent.some((r) => r.body.includes("Untitled session")),
       "new urgent condition was delayed behind stale batch",
     );
     assert(sent[0].at - start < 10000, "first delivery deadline exceeded");
@@ -588,6 +600,7 @@ Deno.test("reminder deadlines recover missing snapshots and bypass failed actors
         ? {
           thread: {
             id: "actor-4",
+            name: "Recovered approval",
             status: { type: "active", activeFlags: ["waitingOnApproval"] },
           },
         }
@@ -634,7 +647,10 @@ Deno.test("reminder deadlines recover missing snapshots and bypass failed actors
       await Deno.readTextFile(join(home, "attention-watchdog/hook-state.json")),
     );
     const sent = JSON.parse(await Deno.readTextFile(join(home, "sent.json")));
-    assert(sent.body.includes("actor-4") && sent.body.includes("reminder"));
+    assert(
+      sent.body.includes("Recovered approval") &&
+        sent.body.includes("reminder"),
+    );
     assert(!sent.body.includes("could not be verified"));
     assert(saved.posts.length === 1);
     assert(

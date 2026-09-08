@@ -132,7 +132,7 @@ Deno.test("accepted and uncertain deliveries are not blindly repeated", () => {
     assert(!restored.eligible(47000).length);
   }
 });
-Deno.test("100 simultaneous blockers fit a private digest with collision-safe IDs", () => {
+Deno.test("digest uses session titles and never exposes session IDs", () => {
   const e = new Engine(newState(1000));
   for (let i = 0; i < 100; i++) {
     e.ingest(
@@ -141,10 +141,15 @@ Deno.test("100 simultaneous blockers fit a private digest with collision-safe ID
       }),
     );
   }
-  const batch = digest(e.eligible(46000), "Mac", 46000, "notice");
+  const titles = Object.fromEntries(
+    Object.keys(e.state.actors).map((id, i) => [id, `Task ${i}`]),
+  );
+  const batch = digest(e.eligible(46000), "Mac", 46000, titles);
   assert(batch.included.length === 100);
   assert(new TextEncoder().encode(batch.body).length <= 3072);
-  assert(batch.body.includes("sameprefix-000"));
+  assert(batch.body.includes("Task 0"));
+  assert(!batch.body.includes("sameprefix"));
+  assert(!batch.body.includes("Notice:"));
   assert(!batch.body.includes("secret"));
 });
 Deno.test("fake-time 24-hour operation does not expire with an inference allowance", () => {
@@ -223,4 +228,19 @@ Deno.test("unresolved capacity is never silently evicted", () => {
   }
   assert(!e.add("actor", "overflow", "approval", "overflow", 10000));
   assert(Object.keys(e.state.episodes).length === 4096 && e.state.losses === 1);
+});
+
+Deno.test("notification titles are bounded single lines with a readable fallback", () => {
+  const e = new Engine(newState(1000));
+  e.ingest(event("Stop", 1000));
+  const episodes = e.eligible(46000), id = episodes[0].actor;
+  const batch = digest(episodes, "Mac", 46000, { [id]: "Fix\n\u202Ehooks" });
+  assert(batch.body.includes("Fix hooks"));
+  assert(!batch.body.includes("\u202E"));
+  const fallback = digest(episodes, "Mac", 46000, {});
+  assert(fallback.body.includes("Untitled session"));
+  assert(!fallback.body.includes(id));
+  const long = digest(episodes, "Mac", 46000, { [id]: "界".repeat(5000) });
+  assert(long.included.length === 1);
+  assert(new TextEncoder().encode(long.body).length <= 3072);
 });

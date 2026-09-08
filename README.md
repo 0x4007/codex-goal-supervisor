@@ -238,8 +238,10 @@ Runtime files are owner-only under `~/.codex/attention-watchdog/`:
 - `spool/`: up to 4,096 event slots, each at most 8 KiB; failed writer claims
   remain visible rather than risking deletion of live writers.
 
-Posts contain only local host type, session-ID prefixes, fixed categories and
-an opaque notice ID. Full local mappings remain in the state file. Urgent batch revalidation has a three-second deadline and no queued backlog;
+Posts show the local host, session titles and fixed status categories. Session
+IDs and internal notice IDs stay in local state and logs. Titles come from the
+Codex display name, are limited to 160 characters, and use Untitled session
+when unavailable. Urgent batch revalidation has a three-second deadline and no queued backlog;
 unchecked members are labeled unverified. Reads use at most four concurrent
 RPC slots. Posts are
 batched under 3 KiB and limited to three per minute. Accepted and uncertain

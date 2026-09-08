@@ -53,22 +53,12 @@ export function digest(
   episodes: Episode[],
   host: string,
   now: number,
-  notification: string,
+  titles: Record<string, string | undefined>,
 ) {
-  const ids = [...new Set(episodes.map((p) => p.actor))];
-  const short = (id: string) => {
-    let length = 8;
-    while (
-      ids.some((other) =>
-        other !== id && other.slice(0, length) === id.slice(0, length)
-      )
-    ) length++;
-    return id.slice(0, length);
-  };
   const legend = new Set<string>();
   const lines: string[] = [];
   const included: Episode[] = [];
-  const prefix = `Codex attention on ${host}\nNotice: ${notification}\n`;
+  const prefix = `Codex attention on ${host}\n`;
   for (const p of episodes) {
     const code = p.kind === "approval"
       ? "A"
@@ -81,13 +71,19 @@ export function digest(
       : p.kind === "stop"
       ? "S"
       : "U";
-    const line = `${short(p.actor)} ${code} ${
+    const title = Array.from(
+      (titles[p.actor] ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(
+        /\s+/gu,
+        " ",
+      ).trim(),
+    ).slice(0, 160).join("") || "Untitled session";
+    const line = `${title} — ${code} ${
       Math.max(0, Math.floor((now - p.created) / 1000))
     }s${p.partial ? "*" : ""}${p.delivery === "accepted" ? " reminder" : ""}`;
     const next = new Set([...legend, `${code}: ${templates[p.kind]}`]);
     const body = prefix + [...lines, line].join("\n") + "\n" +
       [...next].join("\n") +
-      "\n* Request identity partial. Match session ID in Codex.";
+      "\n* Request identity partial. Open the session by title in Codex.";
     if (new TextEncoder().encode(body).length > 3072) break;
     lines.push(line);
     legend.add(`${code}: ${templates[p.kind]}`);
@@ -96,7 +92,7 @@ export function digest(
   return {
     included,
     body: prefix + lines.join("\n") + "\n" + [...legend].join("\n") +
-      "\n* Request identity partial. Match session ID in Codex.",
+      "\n* Request identity partial. Open the session by title in Codex.",
   };
 }
 export async function publish(
@@ -375,7 +371,9 @@ export async function main() {
         presented,
         Deno.build.os === "darwin" ? "Mac" : "VPS",
         Date.now(),
-        notification,
+        Object.fromEntries(
+          Object.values(state.actors).map((a) => [a.id, a.snapshot?.title]),
+        ),
       );
       if (!batch.included.length) {
         await save();
