@@ -130,9 +130,12 @@ export class Observer {
     } catch {
       complete = false;
     }
+    const title = [t.name, t.title, t.preview].find((value) =>
+      typeof value === "string" && value.trim().length > 0
+    );
     return {
       id,
-      title: typeof t.name === "string" ? t.name : undefined,
+      title: typeof title === "string" ? title : undefined,
       turn: turn?.id ?? null,
       runtime: t.status?.type ?? "unknown",
       flags: t.status?.activeFlags ?? [],
