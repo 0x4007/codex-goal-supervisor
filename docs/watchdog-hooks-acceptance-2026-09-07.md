@@ -65,6 +65,10 @@ four actors unreadable and exposes a pending approval on the fifth. It checks
 one verified reminder, exactly five reads, preserved failed-actor receipts and
 allowances, and persisted retry deadlines after shutdown, with no new hooks.
 
+Notification formatting uses the session title and readable status sentence
+only. Compact codes such as `S`, elapsed counters such as `45s`, and partial
+identity markers such as `*` are omitted.
+
 Repair validation: 21 passed, zero failed, fresh Mac execution:
 `b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/0f405b5b-c7b9-47ab-bacd-1351d8c60c91`.
 Local `codex review --uncommitted` exited 0 with no actionable bugs found.

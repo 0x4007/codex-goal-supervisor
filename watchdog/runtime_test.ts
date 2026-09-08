@@ -431,7 +431,7 @@ Deno.test("slow RPC burst delivers all 100 plus new urgent input without queue h
     assert(sent[0].at - start < 10000, "first delivery deadline exceeded");
     assert(sent.at(-1).at - start < 30000, "last delivery deadline exceeded");
     assert(
-      sent.every((r) => r.body.includes("current state could not be verified")),
+      sent.every((r) => r.body.includes("State unverified")),
       "unreadable state must be labeled",
     );
     assert(maxActive <= 4, `RPC concurrency ${maxActive} exceeds four`);

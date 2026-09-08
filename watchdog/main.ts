@@ -1,7 +1,12 @@
 import { join } from "node:path";
 import { Engine, type Episode, newState, type State } from "./engine.ts";
 import { Observer } from "./observe.ts";
-import { identifier, templates, validEvent, VERSION } from "./policy.ts";
+import {
+  identifier,
+  notificationLabels,
+  validEvent,
+  VERSION,
+} from "./policy.ts";
 export class Pool {
   active = 0;
   constructor(readonly limit: number) {}
@@ -52,47 +57,29 @@ export async function revalidateBatch(
 export function digest(
   episodes: Episode[],
   host: string,
-  now: number,
   titles: Record<string, string | undefined>,
 ) {
-  const legend = new Set<string>();
   const lines: string[] = [];
   const included: Episode[] = [];
   const prefix = `Codex attention on ${host}\n`;
   for (const p of episodes) {
-    const code = p.kind === "approval"
-      ? "A"
-      : p.kind === "input"
-      ? "I"
-      : p.kind === "failed"
-      ? "F"
-      : p.kind === "blocked"
-      ? "B"
-      : p.kind === "stop"
-      ? "S"
-      : "U";
     const title = Array.from(
       (titles[p.actor] ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(
         /\s+/gu,
         " ",
       ).trim(),
     ).slice(0, 160).join("") || "Untitled session";
-    const line = `${title} — ${code} ${
-      Math.max(0, Math.floor((now - p.created) / 1000))
-    }s${p.partial ? "*" : ""}${p.delivery === "accepted" ? " reminder" : ""}`;
-    const next = new Set([...legend, `${code}: ${templates[p.kind]}`]);
-    const body = prefix + [...lines, line].join("\n") + "\n" +
-      [...next].join("\n") +
-      "\n* Request identity partial. Open the session by title in Codex.";
+    const line = `${title} — ${notificationLabels[p.kind]}${
+      p.delivery === "accepted" ? " (reminder)" : ""
+    }`;
+    const body = prefix + [...lines, line].join("\n");
     if (new TextEncoder().encode(body).length > 3072) break;
     lines.push(line);
-    legend.add(`${code}: ${templates[p.kind]}`);
     included.push(p);
   }
   return {
     included,
-    body: prefix + lines.join("\n") + "\n" + [...legend].join("\n") +
-      "\n* Request identity partial. Open the session by title in Codex.",
+    body: prefix + lines.join("\n"),
   };
 }
 export async function publish(
@@ -370,7 +357,6 @@ export async function main() {
       const batch = digest(
         presented,
         Deno.build.os === "darwin" ? "Mac" : "VPS",
-        Date.now(),
         Object.fromEntries(
           Object.values(state.actors).map((a) => [a.id, a.snapshot?.title]),
         ),
