@@ -69,7 +69,7 @@ export class Engine {
   constructor(readonly state: State) {
     state.history ??= {};
   }
-  actor(id: string, now: number): Actor | undefined {
+  actor(id: string, _now: number): Actor | undefined {
     if (this.state.actors[id]) return this.state.actors[id];
     if (Object.keys(this.state.actors).length >= 1024) {
       this.state.losses++;
@@ -246,11 +246,12 @@ export class Engine {
         this.resolve(p);
         continue;
       }
-      if (
-        s.complete && ["complete", "completed"].includes(s.goal ?? "") &&
-        s.terminal === "completed"
-      ) this.resolve(p, "completion");
-      else if (
+      if (s.complete && s.terminal === "completed" && s.goal !== "blocked") {
+        // A verified ordinary completion is terminal. Keeping it pending
+        // would cause the hook consumer to reread it forever now that only
+        // blocked goals can publish.
+        this.resolve(p, "completion");
+      } else if (
         stopped && s.complete &&
         (s.terminal === "failed" || s.goal === "blocked")
       ) {

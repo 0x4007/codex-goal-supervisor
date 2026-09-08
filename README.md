@@ -178,14 +178,12 @@ above is unchanged.
 
 Codex lifecycle hooks write small, private events to a bounded local spool.
 The consumer checks the affected session through read-only app-server methods,
-then sends fixed-template alerts to the existing ntfy topic. It makes no model
-calls and never reads historical conversation transcripts. It does not discover
-sessions or run periodic session checks. Only hooks and pending notification
-deadlines trigger reads of the affected session. Normal child handoffs stay quiet. Pending approvals/input,
-failed turns, and stopped blocked goals are separate conditions. Ambiguous root
-stops receive an honest review notice after 45 seconds; deterministic evidence
-alone cannot classify every ordinary final reply, so some normal completions
-will also receive that notice.
+then sends an alert to the existing ntfy topic only when a fresh, complete
+snapshot reports that the goal is blocked. It makes no model calls and never
+reads historical conversation transcripts. It does not discover sessions or
+run periodic session checks. Only hooks and pending blocked-goal notification
+deadlines trigger reads of the affected session. Approval, input, failed-turn,
+ordinary-stop, and unreadable episodes stay internal and never notify.
 
 Run continuously with the existing command:
 
@@ -238,10 +236,10 @@ Runtime files are owner-only under `~/.codex/attention-watchdog/`:
 - `spool/`: up to 4,096 event slots, each at most 8 KiB; failed writer claims
   remain visible rather than risking deletion of live writers.
 
-Posts show the local host, session titles and fixed status categories. Session
-IDs and internal notice IDs stay in local state and logs. Titles come from the
-Codex display name, are limited to 160 characters, and use Untitled session
-when unavailable. Urgent batch revalidation has a three-second deadline and no queued backlog;
+Posts show the local host, session titles and the blocked-goal status. Session
+IDs and internal notice IDs stay in local state and logs. Titles use the Codex
+display name, title, or preview, are limited to 160 characters, and use Untitled
+session when unavailable. Urgent batch revalidation has a three-second deadline and no queued backlog;
 unchecked members are labeled unverified. Reads use at most four concurrent
 RPC slots. Posts are
 batched under 3 KiB and limited to three per minute. Accepted and uncertain

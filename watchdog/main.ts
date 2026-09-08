@@ -1,12 +1,7 @@
 import { join } from "node:path";
 import { Engine, type Episode, newState, type State } from "./engine.ts";
 import { Observer } from "./observe.ts";
-import {
-  identifier,
-  notificationLabels,
-  validEvent,
-  VERSION,
-} from "./policy.ts";
+import { notificationLabels, validEvent, VERSION } from "./policy.ts";
 export class Pool {
   active = 0;
   constructor(readonly limit: number) {}
@@ -22,6 +17,7 @@ export class Pool {
     })();
   }
 }
+export const isNotifiable = (p: Pick<Episode, "kind">) => p.kind === "blocked";
 // A slow batch gets one bounded opportunity to refresh. Unchecked members are
 // explicitly unverified; they never build a FIFO queue ahead of new hooks.
 export async function revalidateBatch(
@@ -37,17 +33,23 @@ export async function revalidateBatch(
       resolve();
     }, 3000);
   });
-  const work: Promise<void>[] = [];
   const attempted = new Set<string>();
-  for (const id of new Set(ids)) {
-    const job = pool.tryRun(() => read(id, controller.signal));
-    if (job) {
-      attempted.add(id);
-      work.push(job);
-    } else break;
-  }
   try {
-    await Promise.race([Promise.allSettled(work), deadline]);
+    const unique = [...new Set(ids)];
+    let next = 0;
+    while (next < unique.length && !controller.signal.aborted) {
+      const work: Promise<void>[] = [];
+      while (next < unique.length) {
+        const id = unique[next];
+        const job = pool.tryRun(() => read(id, controller.signal));
+        if (!job) break;
+        next++;
+        attempted.add(id);
+        work.push(job);
+      }
+      if (!work.length) break;
+      await Promise.race([Promise.allSettled(work), deadline]);
+    }
   } finally {
     clearTimeout(timer!);
     controller.abort();
@@ -63,6 +65,7 @@ export function digest(
   const included: Episode[] = [];
   const prefix = `Codex attention on ${host}\n`;
   for (const p of episodes) {
+    if (!isNotifiable(p)) continue;
     const title = Array.from(
       (titles[p.actor] ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(
         /\s+/gu,
@@ -314,6 +317,9 @@ export async function main() {
         now - lastPost < 20000 ||
         state.posts.filter((t) => now - t < 60000).length >= 3
       ) return;
+      // Revalidate every unresolved hook episode before applying the
+      // blocked-only notification gate. A stop episode can become a blocked
+      // episode only after its fresh snapshot is read.
       const candidates = engine.eligible(now).slice(0, 256);
       if (!candidates.length) return;
       const revalidationAt = Date.now();
@@ -324,10 +330,10 @@ export async function main() {
       );
       if (stopping) return;
       const current = engine.eligible(Date.now()).filter((p) =>
-        candidates.includes(p)
+        candidates.includes(p) && isNotifiable(p)
       );
-      // Unreadable current state must remain explicitly uncertain. Do not
-      // mutate the original category: it is needed for later resolution.
+      // Unreadable current state cannot prove a blocked goal. Do not mutate the
+      // original category: it is needed for later resolution.
       const presented = current.map((p) => ({
         ...p,
         kind: !state.actors[p.actor]?.snapshot?.complete ||
@@ -336,20 +342,21 @@ export async function main() {
           ? "unverified" as const
           : p.kind,
       })).filter((p) => {
-        if (p.delivery !== "accepted") return true;
+        if (!isNotifiable(p)) return false;
         const snapshot = state.actors[p.actor]?.snapshot;
-        return p.kind !== "unverified" && snapshot &&
-          (p.kind === "approval"
-            ? snapshot.flags.includes("waitingOnApproval")
-            : p.kind === "input"
-            ? snapshot.flags.includes("waitingOnUserInput")
-            : snapshot.goal === "blocked" || snapshot.terminal === "failed");
+        return p.kind !== "unverified" && snapshot?.goal === "blocked";
       });
-      // Only attempted reminders move their deadline. Unchecked actors retain
+      // Only attempted actors move their deadline. Unchecked actors retain
       // priority, so failed reads cannot monopolize the four RPC slots. Persist
-      // the delay even when nothing is sent; do not consume the allowance.
+      // the delay even when nothing is sent; do not consume an allowance.
+      const presentedIds = new Set(presented.map((p) => p.id));
       for (const p of candidates) {
-        if (p.delivery === "accepted" && attempted.has(p.actor)) {
+        if (
+          attempted.has(p.actor) &&
+          (p.delivery === "accepted" || !presentedIds.has(p.id))
+        ) {
+          // Failed or non-blocked reads must rotate out of the head of the
+          // queue. This does not consume a notification allowance.
           p.retryAt = Date.now() + 20000;
         }
       }
