@@ -1,20 +1,15 @@
 {
   "version": "5",
   "specifiers": {
-    "npm:smol-toml@1.4.2": "1.4.2",
     "npm:ws@8.18.3": "8.18.3"
   },
   "npm": {
-    "smol-toml@1.4.2": {
-      "integrity": "sha512-rInDH6lCNiEyn3+hH8KVGFdbjc099j47+OSgbMrfDYX1CmXLfdKd7qi6IfcWj2wFxvSVkuI46M+wPGYfEOEj6g=="
-    },
     "ws@8.18.3": {
       "integrity": "sha512-PEIGCY5tSlUt50cqyMXfCzX+oOPqN0vuGqWzbcJ2xvnkzkq46oOpz7dQaTDBdfICb4N14+GARUDw2XV2N4tvzg=="
     }
   },
   "workspace": {
     "dependencies": [
-      "npm:smol-toml@1.4.2",
       "npm:ws@8.18.3"
     ]
   }

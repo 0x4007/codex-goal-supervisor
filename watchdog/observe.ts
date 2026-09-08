@@ -77,7 +77,6 @@ export class Observer {
     if (
       ![
         "initialize",
-        "thread/loaded/list",
         "thread/read",
         "thread/goal/get",
         "thread/turns/list",
@@ -104,13 +103,6 @@ export class Observer {
       this.socket!.send(JSON.stringify({ id, method, params }));
     });
   }
-  async loaded(): Promise<string[]> {
-    await this.open();
-    const r = await this.call("thread/loaded/list", {});
-    return (r.data ?? r.threadIds ?? []).filter((v: unknown) =>
-      typeof v === "string"
-    ).slice(0, 1024);
-  }
   async fresh(id: string, signal?: AbortSignal): Promise<Snapshot> {
     await this.open();
     const t = (await this.call(
@@ -119,8 +111,7 @@ export class Observer {
       signal,
     ))
       .thread;
-    // Sequential reads keep four urgent + four background workers within the
-    // eight-RPC limit, even while discovery and dispatch overlap.
+    // Sequential reads keep hook checks and dispatch within four RPC slots.
     let goal: any, turn: any;
     let complete = true;
     try {

@@ -42,14 +42,12 @@ export type State = {
   episodes: Record<string, Episode>;
   seen: Record<string, number>;
   posts: number[];
-  legacyReceipts: unknown[];
   history?: Record<
     string,
     Pick<Episode, "delivery" | "receipt" | "sentAt" | "created" | "disposition">
   >;
   losses: number;
   lastEvent: number;
-  lastReconcile: number;
   gapAt?: number;
   deliveryHealth?: string;
   captureLossAt?: number;
@@ -63,10 +61,8 @@ export function newState(now: number): State {
     episodes: {},
     seen: {},
     posts: [],
-    legacyReceipts: [],
     losses: 0,
     lastEvent: 0,
-    lastReconcile: 0,
   };
 }
 export class Engine {
@@ -192,7 +188,7 @@ export class Engine {
     delete a.failedAt;
     const approval = s.flags.includes("waitingOnApproval"),
       input = s.flags.includes("waitingOnUserInput");
-    // Start-up discovery observes only loaded active work, never old idle text.
+    // A hook-triggered read can also expose a pending runtime condition.
     for (
       const [present, kind] of [[approval, "approval"], [
         input,
@@ -293,7 +289,7 @@ export class Engine {
       if (
         p.delivery === "accepted" && !p.reminded &&
         now >= (p.sentAt ?? now) + 600000 && a?.snapshot &&
-        now - a.snapshot.at < 15000 && (p.kind === "approval"
+        (p.kind === "approval"
           ? a.snapshot.flags.includes("waitingOnApproval")
           : p.kind === "input"
           ? a.snapshot.flags.includes("waitingOnUserInput")

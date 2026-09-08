@@ -187,29 +187,6 @@ export async function main() {
   } catch (e) {
     if (!(e instanceof Deno.errors.NotFound)) throw e;
     state = newState(Date.now());
-    // The old run stays intact. Retain receipt evidence locally, but never
-    // revive old idle conditions or silently reset accepted delivery history.
-    try {
-      const old = JSON.parse(
-        await Deno.readTextFile(join(directory, "state.json")),
-      );
-      state.legacyReceipts = [{
-        version: old.schema ?? old.version,
-        started: old.started,
-        expires: old.expires,
-        calls: old.calls,
-      }];
-      await Deno.writeTextFile(
-        join(directory, "v2-cutover-state.json"),
-        JSON.stringify(old),
-        { mode: 0o600, createNew: true },
-      );
-    } catch (e) {
-      if (
-        !(e instanceof Deno.errors.NotFound) &&
-        !(e instanceof Deno.errors.AlreadyExists)
-      ) throw e;
-    }
   }
   for (const p of Object.values(state.episodes)) {
     if (p.delivery === "dispatching") p.delivery = "uncertain";
@@ -217,8 +194,7 @@ export async function main() {
   delete state.stopped;
   const engine = new Engine(state),
     observer = new Observer(home),
-    urgent = new Pool(4),
-    background = new Pool(4);
+    urgent = new Pool(4);
   let saving = Promise.resolve();
   const save = () => {
     const raw = JSON.stringify(state);
@@ -253,12 +229,9 @@ export async function main() {
   };
   let draining = false,
     dispatching = false,
-    reconciling = false,
     stopping = false;
   let lastTick = Date.now(),
-    nextDiscovery = 0,
-    lastPost = 0,
-    backgroundCursor = 0;
+    lastPost = 0;
   const startMono = performance.now();
   const jobs = new Set<Promise<unknown>>();
   const track = (job: Promise<unknown>) => {
@@ -290,6 +263,7 @@ export async function main() {
           if (!(e instanceof Deno.errors.NotFound)) state.losses++;
           continue;
         }
+        engine.compact(Date.now());
         engine.ingest(event);
         await save();
         await Deno.remove(slot, { recursive: true });
@@ -319,7 +293,6 @@ export async function main() {
           running: true,
           at: Date.now(),
           lastEvent: state.lastEvent,
-          lastReconcile: state.lastReconcile,
           hookObserved: Object.values(state.actors).filter((a) =>
             a.hookVersion === VERSION
           ).length,
@@ -343,45 +316,6 @@ export async function main() {
       );
     } finally {
       draining = false;
-    }
-  }
-  async function reconcile() {
-    if (reconciling) return;
-    reconciling = true;
-    try {
-      let ids: string[] = [];
-      try {
-        ids = await observer.loaded();
-      } catch {
-        state.deliveryHealth = "Current session discovery unavailable";
-      }
-      // Only the loaded set and actors registered by events. Never thread/list
-      // over historical sessions and never a transcript sweep.
-      const known = Object.values(state.actors).filter((a) =>
-        engine.forActor(a.id).length || a.snapshot?.terminal === "inProgress" ||
-        Date.now() - a.lastEvent < 3600000
-      ).map((a) => a.id);
-      const candidates = [...new Set([...known, ...ids])].slice(0, 1024);
-      // Four background workers share a ten-second epoch, then resume fairly
-      // on the next sweep. No unbounded queue survives an epoch or shutdown.
-      const until = performance.now() + 10000;
-      let remaining = candidates.length;
-      await Promise.all(
-        Array.from({ length: 4 }, () =>
-          background.tryRun(async () => {
-            while (remaining > 0 && !stopping && performance.now() < until) {
-              remaining--;
-              const id = candidates[backgroundCursor++ % candidates.length];
-              await read(id);
-            }
-          })),
-      );
-
-      state.lastReconcile = Date.now();
-      engine.compact(Date.now());
-      await save();
-    } finally {
-      reconciling = false;
     }
   }
   async function dispatch() {
@@ -500,19 +434,13 @@ export async function main() {
         for (const a of Object.values(state.actors)) {
           if (a.snapshot) a.snapshot.complete = false;
         }
-        nextDiscovery = 0;
         log("observation_gap");
       }
       lastTick = now;
       await drain();
       if (args.includes("--once")) {
-        await reconcile();
         await dispatch();
         break;
-      }
-      if (now >= nextDiscovery) {
-        nextDiscovery = now + 30000;
-        track(reconcile());
       }
       track(dispatch());
       if (

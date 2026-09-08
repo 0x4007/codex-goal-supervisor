@@ -190,6 +190,7 @@ Deno.test("runtime handles real spool, read-only RPC, exclusive lock and bounded
     assert(state.stopped);
     assert(methods.includes("thread/read"));
     assert(!methods.includes("thread/list"));
+    assert(!methods.includes("thread/loaded/list"));
     assert(!methods.some((m) => /resume|start|interrupt/.test(m)));
     const o = new Observer(home);
     let rejected = false;
@@ -213,7 +214,7 @@ Deno.test("runtime handles real spool, read-only RPC, exclusive lock and bounded
   }
 });
 
-Deno.test("one-shot completes real reconciliation and mocked delivery before exit", async () => {
+Deno.test("one-shot completes hook-episode revalidation and delivery before exit", async () => {
   const home = await Deno.makeTempDir({
     dir: "/tmp",
     prefix: "attention-once-",
@@ -294,7 +295,7 @@ Deno.test("one-shot completes real reconciliation and mocked delivery before exi
       saved.stopped >=
         JSON.parse(await Deno.readTextFile(join(home, "sent.json"))).at,
     );
-    assert(saved.lastReconcile > state.started);
+    assert(saved.actors.actor.snapshot.complete);
   } finally {
     for (const ws of sockets.clients) ws.terminate();
     await new Promise<void>((r) => sockets.close(() => r()));
@@ -421,7 +422,7 @@ Deno.test("slow RPC burst delivers all 100 plus new urgent input without queue h
       sent.every((r) => r.body.includes("current state could not be verified")),
       "unreadable state must be labeled",
     );
-    assert(maxActive <= 8, `RPC concurrency ${maxActive} exceeds eight`);
+    assert(maxActive <= 4, `RPC concurrency ${maxActive} exceeds four`);
     console.log(
       JSON.stringify({
         firstMs: sent[0].at - start,

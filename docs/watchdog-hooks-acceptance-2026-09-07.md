@@ -1,116 +1,53 @@
-# Hook-driven attention prototype acceptance
+# V2 hook notification evidence
 
-This is the deterministic first slice of the September 7 hook design. It replaces
-the historical timer scanner and removes its model-backed analyst. Optional model
-triage, the full design timing matrix and remote deployment are not claimed.
+V2 is the deterministic hook-based implementation in `watchdog/`. V1 scanner
+code and its migration path are removed. The separate Python recovery service
+is not part of the notification implementation.
 
-Canonical branch: `codex/watchdog-hooks-redesign-2026-09-07-g79aa93690b`.
-Canonical worktree: `/Users/nv/repos/0x4007/codex-goal-supervisor/.codex-worktrees/watchdog-hooks-redesign-2026-09-07-g79aa93690b`.
-Base: `58c59e7957dce8b617fa65a866c99094ef7b94ed`.
-Mac runtime: `~/.codex/attention-watchdog/`, job `com.nv.codex-attention`.
+## Verified delivery baseline
 
-## Real acceptance evidence
-
-- Codex CLI 0.153.4 showed eight installed and eight active lifecycle hooks after
-  normal `/hooks` trust review. No trust hashes were written by the installer.
-- Real TUI test session: `01a07dda-daab-72f0-a5ca-e0677bf82cbe`.
-- Real test turn: `01a07ddc-311b-7f50-9d54-8e812eedd2c2`.
-- Stop captured at `2026-09-07T21:53:02.829Z`; event ID
-  `3fb851b4-edf8-4669-8697-769c037ee0a7`.
-- ntfy receipt `qiI6FvssU4uH`, accepted at approximately
-  `2026-09-07T21:53:48.281Z`: 45.452 seconds after Stop.
-- Source payload hash of this first runtime:
-  `7759b2ca41fdd44e13da9be5d89756b6d52c594c4ed6c565b2178e08a47b7102`.
-  Later source edits require a replacement installed hash and focused validation.
-- At 21:54 UTC the real consumer reported 20 actors, four hook-observed and 16
-  snapshot-only, zero capture losses, one accepted notice, and zero model calls.
-- Phone display and exact-session navigation are awaiting the user's answer.
-
-## Test evidence
-
-Host: Mac. Results are stored outside Git using the installed evidence tool.
-
-- First execution (13 passed, 2 failed):
-  `b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/3e9d0101-5e23-463b-bdb8-0a944808241e`.
-  Actual hook launch exposed missing read permission for atomic rename. Fixed.
-- Fresh corrected execution (15 passed):
-  `b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/fa5c12c5-6a5b-4bbc-8920-bd1fb0a6d7dd`.
-  Actual 100-process burst p95 535.212 ms, p99 537.863 ms. Capture passed;
-  the design targets of p95 <50 ms and p99 <200 ms did not pass.
-- Runtime startup exposed WS environment reads and write permission required
-  by Deno for connecting to the existing Unix socket. Installer permissions
-  were corrected; the shared daemon was not restarted.
-
-## Remaining prototype limits
-
-- Hook-specific async/synchronous input-tool mappings have not been proved, so
-  broad tool hooks are not installed. Runtime pending-input flags are supported;
-  optional async questions without those flags remain a coverage gap.
-- Completion inference is intentionally absent. Ambiguous ordinary root stops
-  can produce a generic review notice; no model is needed for delivery.
-- Health is exposed in local status; independent external host-death alerts and
-  the full design's coalesced coverage-loss pushes are not implemented.
-- The burst launch-latency target failed. Large degraded-RPC burst latency and
-  seven-day capacity recovery have not been accepted on a live host.
-- Claims left by failed writers are retained and counted; automated abandoned
-  claim recovery is deferred to avoid deleting possibly live capture work.
-- Remote workers and sleeping/offline Mac operation are not covered. Existing
-  sessions need a new observed hook event to prove their refreshed configuration.
-
-## Final source validation and review
-
-Fresh focused result after connection-order and pre-dispatch cancellation fixes:
-`b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/cb0fad15-e0b4-4fa2-90c2-0e95a3c3149a`.
-All 15 tests passed. This is actual execution, not a cached result.
-
-The watchdog-only LaunchAgent was unloaded; PID 42313 exited and the stopped
-record was persisted. Restart retained receipt `qiI6FvssU4uH` as accepted with
-one attempt. No duplicate test delivery appeared after restart.
-
-Local review: `codex review --uncommitted`, exit 0, September 7 at 21:58 UTC.
-Log: `~/.codex/attention-watchdog/hooks-review-2026-09-07.log`.
-Three P2 findings were substantiated: one-shot shutdown ordering, delayed batch
-revalidation under degraded RPC, and resolved-episode capacity pressure. Under
-the configured review policy, P2-only findings are tracked instead of starting
-a correction round. These are unresolved prototype defects, not passed gates.
-
-## Review-defect repair and two-host rollout
-
-The follow-up implements issues #4, #5 and #6 and adds a Linux user-service
-preparation path. The original prototype limits above are historical where
-superseded by this section; optional input-tool mapping, model triage and external
-host-death detection remain outside this repair.
-
-- `--once` awaits bounded reconciliation and eligible dispatch before shutdown.
-- Urgent revalidation has a three-second budget and does not enqueue all actors
-  ahead of new hooks. Unchecked members receive an unverified-state template.
-  Background observation has four workers and bounded rotating epochs.
-- Resolved detail is reclaimed before the 4,096-episode cap rejects a new
-  condition. A separate bounded set of 8,192 receipt/deduplication tombstones
-  preserves recent replay protection; unresolved and in-flight records are not
-  silently evicted.
-- The same installer prepares launchd on Mac and a systemd user unit on Linux.
-  Service activation and normal hook trust remain host-specific verification.
-
-Mac fresh test execution: 19 passed. Evidence reference:
-`b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/8f6e2775-a7af-49be-bb4c-34485acc0a2b`.
-The runtime regression includes 100 slow-RPC conditions and one later urgent
-request, real client concurrency measurement, and locally captured notification
-bodies. No ntfy or model calls occur in this suite. The elapsed deadline includes
-two three-second revalidation budgets, 20-second send pacing and scheduling
-allowance. The one-shot regression proves the send is completed before shutdown.
-
-Final repair verification: 20 passed, zero failed, actual Mac execution in the
-canonical worktree. Evidence:
+PR #8 (`f1d134b8ff5d1f057a9fa4e9b9d9529ace3db89f`) fixed one-shot shutdown,
+slow-RPC dispatch, and resolved-episode capacity defects. Twenty tests passed in
+actual Mac execution, recorded outside Git with reference:
 `b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/f8919690-e6bf-4303-982d-d4b58e0f8853`.
-Slow-RPC first delivery was 3,312 ms; the later urgent delivery was 26,495 ms,
-including send pacing, with at most eight pending client RPCs.
-Unverified reminders preserve the original receipt and reminder allowance.
 
-Repair review round 1 found invalid systemd WorkingDirectory quoting (P1) and
-unverified reminders consuming their allowance (P2). Both were fixed. Round 2,
-`codex review --uncommitted`, found no actionable regressions. Logs are stored
-outside Git under `~/.codex/attention-watchdog/hooks-repair-review*.log`.
-Native VPS `systemd-analyze --user verify` passed for the corrected unit; Mac
-`plutil -lint` passed. Activation and live receipts are recorded separately in
-host-local installed-acceptance records after deployment.
+The same runtime was installed on Mac and VPS, with eight active hooks on each
+host after normal TUI trust review. Actual Stop events produced ntfy receipts:
+
+| Host | Receipt | Stop-to-acceptance |
+| --- | --- | --- |
+| Mac | `2jyr741IWJ8Y` | 45.634 seconds |
+| VPS | `WmciStLZ8WyK` | 45.112 seconds |
+
+Both consumers retained receipts across restart, with one send attempt and zero
+capture losses. Host-local records are under
+`~/.codex/attention-watchdog/installed-repair-acceptance-2026-09-07.json`.
+This baseline predates removal of the periodic fallback; new source needs fresh
+verification and installation.
+
+## Coverage limits
+
+A missing hook can mean a missed alert. V2 does not discover loaded sessions or
+periodically check sessions. Hook events and pending notification deadlines are
+the only sources of session reads. Optional async input-tool mapping, opaque
+hangs, sleeping hosts, and external host-death alerts remain uncovered.
+
+Ordinary completed turns can produce a generic review notice. Phone display
+and exact-session navigation remain unconfirmed. Hook-process burst latency
+exceeds the original design target; the tests report this without treating it
+as a delivery failure. No model calls are used for notification decisions.
+
+## V1 removal verification
+
+Fresh Mac execution after removing discovery: 20 passed, zero failed.
+`b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/698c9fb9-0b06-4b80-9572-d7b30868b817`.
+Final frozen dependency/type check after removing the unused V1 TOML parser:
+`b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/f2332b2f-e7ae-402a-a0ff-29c5e4afd6c4`.
+Both are actual executions on the canonical worktree, not cached results.
+
+Local `codex review --uncommitted` completed with two P2 reminder findings:
+a missing initial snapshot prevents recovery, and four repeatedly unreadable
+actors can starve later reminder checks. They are tracked in the removal PR;
+they are not fixed or verified. The review reproduced both cases with evidence
+`b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/29a9e4c7-f84b-4669-bcce-778a487f1689`.
+The final dependency-only removal was type-checked after review.
