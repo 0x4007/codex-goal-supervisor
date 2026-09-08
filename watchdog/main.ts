@@ -33,10 +33,13 @@ export async function revalidateBatch(
     }, 3000);
   });
   const work: Promise<void>[] = [];
+  const attempted = new Set<string>();
   for (const id of new Set(ids)) {
     const job = pool.tryRun(() => read(id, controller.signal));
-    if (job) work.push(job);
-    else break;
+    if (job) {
+      attempted.add(id);
+      work.push(job);
+    } else break;
   }
   try {
     await Promise.race([Promise.allSettled(work), deadline]);
@@ -44,6 +47,7 @@ export async function revalidateBatch(
     clearTimeout(timer!);
     controller.abort();
   }
+  return attempted;
 }
 export function digest(
   episodes: Episode[],
@@ -330,7 +334,11 @@ export async function main() {
       const candidates = engine.eligible(now).slice(0, 256);
       if (!candidates.length) return;
       const revalidationAt = Date.now();
-      await revalidateBatch(candidates.map((p) => p.actor), urgent, read);
+      const attempted = await revalidateBatch(
+        candidates.map((p) => p.actor),
+        urgent,
+        read,
+      );
       if (stopping) return;
       const current = engine.eligible(Date.now()).filter((p) =>
         candidates.includes(p)
@@ -344,7 +352,24 @@ export async function main() {
             (state.actors[p.actor]?.failedAt ?? 0) >= revalidationAt
           ? "unverified" as const
           : p.kind,
-      })).filter((p) => p.delivery !== "accepted" || p.kind !== "unverified");
+      })).filter((p) => {
+        if (p.delivery !== "accepted") return true;
+        const snapshot = state.actors[p.actor]?.snapshot;
+        return p.kind !== "unverified" && snapshot &&
+          (p.kind === "approval"
+            ? snapshot.flags.includes("waitingOnApproval")
+            : p.kind === "input"
+            ? snapshot.flags.includes("waitingOnUserInput")
+            : snapshot.goal === "blocked" || snapshot.terminal === "failed");
+      });
+      // Only attempted reminders move their deadline. Unchecked actors retain
+      // priority, so failed reads cannot monopolize the four RPC slots. Persist
+      // the delay even when nothing is sent; do not consume the allowance.
+      for (const p of candidates) {
+        if (p.delivery === "accepted" && attempted.has(p.actor)) {
+          p.retryAt = Date.now() + 20000;
+        }
+      }
       const notification = crypto.randomUUID();
       const batch = digest(
         presented,
@@ -352,7 +377,10 @@ export async function main() {
         Date.now(),
         notification,
       );
-      if (!batch.included.length) return;
+      if (!batch.included.length) {
+        await save();
+        return;
+      }
       const members = batch.included.map((p) => state.episodes[p.id]);
       let topic: string;
       try {

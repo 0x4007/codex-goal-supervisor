@@ -543,3 +543,123 @@ Deno.test("unverified reminders retain their single allowance and do not publish
     await Deno.remove(home, { recursive: true });
   }
 });
+
+Deno.test("reminder deadlines recover missing snapshots and bypass failed actors without hooks", async () => {
+  const home = await Deno.makeTempDir({
+    dir: "/tmp",
+    prefix: "attention-reminder-recovery-",
+  });
+  const { Engine, newState } = await import("./engine.ts");
+  const now = Date.now(),
+    state = newState(now - 700000),
+    engine = new Engine(state);
+  // All five initial notices were accepted during an outage, without snapshots.
+  for (let i = 0; i < 5; i++) {
+    const id = `actor-${i}`;
+    engine.actor(id, now);
+    const p = engine.add(id, "turn", "approval", "request", now - 650000)!;
+    p.disposition = "attention";
+    p.delivery = "accepted";
+    p.receipt = `original-${i}`;
+    p.sentAt = now - 610000;
+  }
+  await Deno.mkdir(join(home, "attention-watchdog"));
+  await Deno.mkdir(join(home, ".config/codex-nudge"), { recursive: true });
+  await Deno.mkdir(join(home, "app-server-control"));
+  await Deno.writeTextFile(
+    join(home, "attention-watchdog/hook-state.json"),
+    JSON.stringify(state),
+  );
+  await Deno.writeTextFile(join(home, ".config/codex-nudge/topic"), "fixture");
+  const methods: string[] = [], reads: string[] = [];
+  const server = createServer(), sockets = new WebSocketServer({ server });
+  sockets.on("connection", (ws: any) =>
+    ws.on("message", (raw: any) => {
+      const r = JSON.parse(raw.toString());
+      if (!r.id) return;
+      methods.push(r.method);
+      if (r.method === "thread/read") {
+        reads.push(r.params.threadId);
+        if (r.params.threadId !== "actor-4") return;
+      }
+      const result = r.method === "initialize"
+        ? {}
+        : r.method === "thread/read"
+        ? {
+          thread: {
+            id: "actor-4",
+            status: { type: "active", activeFlags: ["waitingOnApproval"] },
+          },
+        }
+        : r.method === "thread/goal/get"
+        ? { goal: null }
+        : r.method === "thread/turns/list"
+        ? { data: [{ id: "turn", status: "inProgress" }] }
+        : { data: [] };
+      ws.send(JSON.stringify({ id: r.id, result }));
+    }));
+  await new Promise<void>((r) =>
+    server.listen(join(home, "app-server-control/app-server-control.sock"), r)
+  );
+  const harness = join(home, "harness.ts");
+  await Deno.writeTextFile(
+    harness,
+    `import {main} from ${
+      JSON.stringify(new URL("main.ts", import.meta.url).href)
+    };globalThis.fetch=async(input,init)=>{if(String(input)!=="https://ntfy.sh/fixture")throw Error("unexpected publish");await Deno.writeTextFile(${
+      JSON.stringify(join(home, "sent.json"))
+    },JSON.stringify({body:init?.body,at:Date.now()}));return new Response(JSON.stringify({id:"recovered-reminder"}),{status:200});};await main();`,
+  );
+  try {
+    const result = await new Deno.Command(Deno.execPath(), {
+      args: [
+        "run",
+        "--allow-read",
+        "--allow-write",
+        "--allow-net",
+        "--allow-env",
+        "--config",
+        fileURLToPath(new URL("../deno.json", import.meta.url)),
+        harness,
+        "--duration",
+        "6s",
+      ],
+      env: { HOME: home, CODEX_HOME: home },
+      clearEnv: true,
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assert(result.success, new TextDecoder().decode(result.stderr));
+    const saved = JSON.parse(
+      await Deno.readTextFile(join(home, "attention-watchdog/hook-state.json")),
+    );
+    const sent = JSON.parse(await Deno.readTextFile(join(home, "sent.json")));
+    assert(sent.body.includes("actor-4") && sent.body.includes("reminder"));
+    assert(!sent.body.includes("could not be verified"));
+    assert(saved.posts.length === 1);
+    assert(
+      !methods.some((m) => m.includes("list") && !m.includes("turns")),
+      "no session discovery",
+    );
+    assert(
+      reads.length === 5,
+      `failed actors must defer, got ${JSON.stringify(reads)}`,
+    );
+    for (const p of Object.values(saved.episodes) as any[]) {
+      if (p.actor === "actor-4") {
+        assert(p.reminded && p.receipt === "recovered-reminder");
+      } else {
+        assert(!p.reminded && p.receipt.startsWith("original-"));
+        assert(
+          p.retryAt > saved.stopped,
+          "failed read deadline must survive shutdown",
+        );
+      }
+    }
+  } finally {
+    for (const ws of sockets.clients) ws.terminate();
+    await new Promise<void>((r) => sockets.close(() => r()));
+    await new Promise<void>((r) => server.close(() => r()));
+    await Deno.remove(home, { recursive: true });
+  }
+});
