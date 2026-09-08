@@ -25,6 +25,7 @@ export type Event = {
 };
 export type Snapshot = {
   id: string;
+  title?: string;
   turn: string | null;
   runtime: string;
   flags: string[];

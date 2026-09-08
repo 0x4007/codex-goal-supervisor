@@ -132,6 +132,7 @@ export class Observer {
     }
     return {
       id,
+      title: typeof t.name === "string" ? t.name : undefined,
       turn: turn?.id ?? null,
       runtime: t.status?.type ?? "unknown",
       flags: t.status?.activeFlags ?? [],
