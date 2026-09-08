@@ -129,7 +129,7 @@ Deno.test("runtime handles real spool, read-only RPC, exclusive lock and bounded
     "--allow-env",
     fileURLToPath(new URL("main.ts", import.meta.url)),
     "--duration",
-    "4s",
+    "8s",
   ];
   let child: Deno.ChildProcess | undefined;
   try {
@@ -168,7 +168,21 @@ Deno.test("runtime handles real spool, read-only RPC, exclusive lock and bounded
     await w.close();
     const hookResult = await hook.output();
     assert(hookResult.success, new TextDecoder().decode(hookResult.stderr));
-    await new Promise((r) => setTimeout(r, 600));
+    const readyAt = Date.now() + 3000;
+    while (true) {
+      try {
+        const status = JSON.parse(
+          await Deno.readTextFile(join(home, "attention-watchdog/status.json")),
+        );
+        if (status.running === true) break;
+      } catch {
+        // The consumer may still be creating or writing its status file.
+      }
+      if (Date.now() >= readyAt) {
+        throw new Error("consumer did not become ready");
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
     const second = await new Deno.Command(Deno.execPath(), {
       args,
       env: { HOME: home, CODEX_HOME: home },
@@ -216,7 +230,7 @@ Deno.test("runtime handles real spool, read-only RPC, exclusive lock and bounded
   }
 });
 
-Deno.test("one-shot completes hook-episode revalidation and delivery before exit", async () => {
+Deno.test("one-shot delivers a verified blocked goal before exit", async () => {
   const home = await Deno.makeTempDir({
     dir: "/tmp",
     prefix: "attention-once-",
@@ -255,7 +269,7 @@ Deno.test("one-shot completes hook-episode revalidation and delivery before exit
           },
         }
         : r.method === "thread/goal/get"
-        ? { goal: null }
+        ? { goal: { status: "blocked" } }
         : r.method === "thread/turns/list"
         ? { data: [{ id: "turn", status: "completed" }] }
         : { data: [] };
@@ -306,7 +320,8 @@ Deno.test("one-shot completes hook-episode revalidation and delivery before exit
     );
     assert(saved.actors.actor.snapshot.complete);
     const sent = JSON.parse(await Deno.readTextFile(join(home, "sent.json")));
-    assert(sent.body.includes("Preview fallback task — Turn stopped"));
+    assert(sent.body.includes("Preview fallback task — Goal blocked"));
+    assert(!sent.body.includes("Turn stopped"));
   } finally {
     for (const ws of sockets.clients) ws.terminate();
     await new Promise<void>((r) => sockets.close(() => r()));
@@ -315,7 +330,7 @@ Deno.test("one-shot completes hook-episode revalidation and delivery before exit
   }
 });
 
-Deno.test("slow RPC burst delivers all 100 plus new urgent input without queue head blocking", async () => {
+Deno.test("slow RPC burst delivers all blocked goals without queue head blocking", async () => {
   const home = await Deno.makeTempDir({
     dir: "/tmp",
     prefix: "attention-burst-",
@@ -333,12 +348,12 @@ Deno.test("slow RPC burst delivers all 100 plus new urgent input without queue h
       runtime: "idle",
       flags: [],
       terminal: "completed",
-      goal: null,
+      goal: "blocked",
       parent: null,
       at: Date.now(),
       complete: true,
     };
-    engine.add(id, "turn", "stop", "stop:turn", Date.now() - 50000);
+    engine.add(id, "turn", "blocked", "blocked:turn", Date.now() - 50000);
   }
   await Deno.mkdir(join(home, "attention-watchdog"));
   await Deno.mkdir(join(home, ".config/codex-nudge"), { recursive: true });
@@ -355,12 +370,31 @@ Deno.test("slow RPC burst delivers all 100 plus new urgent input without queue h
       const r = JSON.parse(raw.toString());
       if (!r.id) return;
       if (r.method === "thread/read") {
+        const id = r.params.threadId;
+        setTimeout(() =>
+          ws.send(JSON.stringify({
+            id: r.id,
+            result: {
+              thread: {
+                id,
+                name: null,
+                preview: id === "new-urgent" ? "New urgent blocked goal" : id,
+                status: { type: "idle" },
+              },
+            },
+          })), 50);
         return;
       }
       ws.send(
         JSON.stringify({
           id: r.id,
-          result: r.method === "initialize" ? {} : { data: [] },
+          result: r.method === "initialize"
+            ? {}
+            : r.method === "thread/goal/get"
+            ? { goal: { status: "blocked" } }
+            : r.method === "thread/turns/list"
+            ? { data: [{ id: "turn", status: "completed" }] }
+            : { data: [] },
         }),
       );
     }));
@@ -407,8 +441,8 @@ Deno.test("slow RPC burst delivers all 100 plus new urgent input without queue h
       capture({
         session_id: "new-urgent",
         turn_id: "new-turn",
-        hook_event_name: "PermissionRequest",
-      }, Date.now() - 15000),
+        hook_event_name: "Stop",
+      }, Date.now() - 50000),
     );
     const result = await child.output();
     child = undefined;
@@ -435,15 +469,18 @@ Deno.test("slow RPC burst delivers all 100 plus new urgent input without queue h
       );
     }
     assert(
-      sent.some((r) => r.body.includes("Untitled session")),
-      "new urgent condition was delayed behind stale batch",
+      sent.some((r) =>
+        r.body.includes("New urgent blocked goal — Goal blocked")
+      ),
+      "new blocked goal was delayed behind stale batch",
     );
     assert(sent[0].at - start < 10000, "first delivery deadline exceeded");
     assert(sent.at(-1).at - start < 30000, "last delivery deadline exceeded");
     assert(
-      sent.every((r) => r.body.includes("State unverified")),
-      "unreadable state must be labeled",
+      sent.every((r) => r.body.includes("Goal blocked")),
+      "only blocked goals may be published",
     );
+    assert(sent.every((r) => !r.body.includes("Turn stopped")));
     assert(maxActive <= 4, `RPC concurrency ${maxActive} exceeds four`);
     console.log(
       JSON.stringify({
@@ -467,7 +504,7 @@ Deno.test("slow RPC burst delivers all 100 plus new urgent input without queue h
   }
 });
 
-Deno.test("unverified reminders retain their single allowance and do not publish", async () => {
+Deno.test("non-blocked reminders retain their receipt and do not publish", async () => {
   const home = await Deno.makeTempDir({
     dir: "/tmp",
     prefix: "attention-reminder-",
@@ -550,7 +587,7 @@ Deno.test("unverified reminders retain their single allowance and do not publish
     const saved = JSON.parse(
       await Deno.readTextFile(join(home, "attention-watchdog/hook-state.json")),
     );
-    assert(saved.posts.length === 0, "unverified reminder must not dispatch");
+    assert(saved.posts.length === 0, "non-blocked reminder must not dispatch");
     assert(
       Object.values(saved.episodes).every((p: any) =>
         p.delivery === "accepted" && !p.reminded &&
@@ -566,7 +603,7 @@ Deno.test("unverified reminders retain their single allowance and do not publish
   }
 });
 
-Deno.test("reminder deadlines recover missing snapshots and bypass failed actors without hooks", async () => {
+Deno.test("blocked reminders recover missing snapshots and bypass failed actors without hooks", async () => {
   const home = await Deno.makeTempDir({
     dir: "/tmp",
     prefix: "attention-reminder-recovery-",
@@ -575,11 +612,11 @@ Deno.test("reminder deadlines recover missing snapshots and bypass failed actors
   const now = Date.now(),
     state = newState(now - 700000),
     engine = new Engine(state);
-  // All five initial notices were accepted during an outage, without snapshots.
+  // All five initial blocked-goal notices were accepted during an outage, without snapshots.
   for (let i = 0; i < 5; i++) {
     const id = `actor-${i}`;
     engine.actor(id, now);
-    const p = engine.add(id, "turn", "approval", "request", now - 650000)!;
+    const p = engine.add(id, "turn", "blocked", "stop:turn", now - 650000)!;
     p.disposition = "attention";
     p.delivery = "accepted";
     p.receipt = `original-${i}`;
@@ -610,14 +647,14 @@ Deno.test("reminder deadlines recover missing snapshots and bypass failed actors
         ? {
           thread: {
             id: "actor-4",
-            name: "Recovered approval",
-            status: { type: "active", activeFlags: ["waitingOnApproval"] },
+            name: "Recovered blocked goal",
+            status: { type: "idle" },
           },
         }
         : r.method === "thread/goal/get"
-        ? { goal: null }
+        ? { goal: { status: "blocked" } }
         : r.method === "thread/turns/list"
-        ? { data: [{ id: "turn", status: "inProgress" }] }
+        ? { data: [{ id: "turn", status: "completed" }] }
         : { data: [] };
       ws.send(JSON.stringify({ id: r.id, result }));
     }));
@@ -658,8 +695,8 @@ Deno.test("reminder deadlines recover missing snapshots and bypass failed actors
     );
     const sent = JSON.parse(await Deno.readTextFile(join(home, "sent.json")));
     assert(
-      sent.body.includes("Recovered approval") &&
-        sent.body.includes("reminder"),
+      sent.body.includes("Recovered blocked goal — Goal blocked") &&
+        sent.body.includes("(reminder)"),
     );
     assert(!sent.body.includes("could not be verified"));
     assert(saved.posts.length === 1);

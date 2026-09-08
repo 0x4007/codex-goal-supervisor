@@ -1,6 +1,6 @@
 import { Engine, newState } from "./engine.ts";
 import { capture, type Snapshot } from "./policy.ts";
-import { digest } from "./main.ts";
+import { digest, isNotifiable } from "./main.ts";
 const assert = (x: unknown, m = "assertion failed") => {
   if (!x) throw new Error(m);
 };
@@ -23,12 +23,13 @@ const event = (kind: string, at: number, extra: Record<string, unknown> = {}) =>
     hook_event_name: kind,
     ...extra,
   }, at);
-Deno.test("stop deadline is independent of AI and idle no-goal is not discarded", () => {
+Deno.test("stop deadline waits for fresh evidence and retires ordinary completion", () => {
   const e = new Engine(newState(1000));
   e.ingest(event("Stop", 1000));
-  e.observe(snap(2000), 2000);
   assert(e.eligible(45999).length === 0);
   assert(e.eligible(46000).length === 1);
+  e.observe(snap(47000), 47000);
+  assert(!e.eligible(60000).length);
 });
 Deno.test("goal completion evidence suppresses a stop but not pending input", () => {
   const e = new Engine(newState(1000));
@@ -132,28 +133,30 @@ Deno.test("accepted and uncertain deliveries are not blindly repeated", () => {
     assert(!restored.eligible(47000).length);
   }
 });
-Deno.test("digest uses session titles and never exposes session IDs", () => {
+Deno.test("digest includes only blocked goals and never exposes session IDs", () => {
   const e = new Engine(newState(1000));
   for (let i = 0; i < 100; i++) {
-    e.ingest(
-      event("Stop", 1000, {
-        session_id: `sameprefix-${String(i).padStart(3, "0")}`,
-      }),
-    );
+    const id = `sameprefix-${String(i).padStart(3, "0")}`;
+    e.actor(id, 1000);
+    e.add(id, "turn", "blocked", `blocked:${i}`, 1000);
   }
+  const ignored = e.add("ignored", "turn", "approval", "approval", 1000)!;
   const titles = Object.fromEntries(
     Object.keys(e.state.actors).map((id, i) => [id, `Task ${i}`]),
   );
-  const batch = digest(e.eligible(46000), "Mac", titles);
+  const batch = digest([ignored, ...e.eligible(1000)], "Mac", titles);
   assert(batch.included.length === 100);
   assert(new TextEncoder().encode(batch.body).length <= 3072);
   assert(batch.body.includes("Task 0"));
-  assert(batch.body.includes("Task 0 — Turn stopped"));
-  assert(!batch.body.includes("S 45s"));
+  assert(batch.body.includes("Task 0 — Goal blocked"));
+  assert(!batch.body.includes("Approval pending"));
+  assert(!batch.body.includes("Turn stopped"));
   assert(!batch.body.includes("Request identity"));
   assert(!batch.body.includes("sameprefix"));
   assert(!batch.body.includes("Notice:"));
   assert(!batch.body.includes("secret"));
+  assert(isNotifiable({ kind: "blocked" }));
+  assert(!isNotifiable({ kind: "stop" }));
 });
 Deno.test("fake-time 24-hour operation does not expire with an inference allowance", () => {
   const e = new Engine(newState(1000));
@@ -235,13 +238,14 @@ Deno.test("unresolved capacity is never silently evicted", () => {
 
 Deno.test("notification titles are bounded single lines with a readable fallback", () => {
   const e = new Engine(newState(1000));
-  e.ingest(event("Stop", 1000));
-  const episodes = e.eligible(46000), id = episodes[0].actor;
+  e.actor("actor", 1000);
+  e.add("actor", "turn", "blocked", "blocked:turn", 1000);
+  const episodes = e.eligible(1000), id = episodes[0].actor;
   const batch = digest(episodes, "Mac", { [id]: "Fix\n\u202Ehooks" });
   assert(batch.body.includes("Fix hooks"));
   assert(!batch.body.includes("\u202E"));
-  assert(batch.body.includes("Fix hooks — Turn stopped"));
-  assert(!batch.body.includes("S 45s"));
+  assert(batch.body.includes("Fix hooks — Goal blocked"));
+  assert(!batch.body.includes("Turn stopped"));
   assert(!batch.body.includes("Request identity"));
   const fallback = digest(episodes, "Mac", {});
   assert(fallback.body.includes("Untitled session"));

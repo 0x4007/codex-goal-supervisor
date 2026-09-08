@@ -20,19 +20,21 @@ harness are separate tools, not V1 notification code.
    and attention episode. This local queue loop does not discover sessions.
 3. Attention-bearing hooks and pending notification deadlines trigger bounded,
    read-only checks of the affected session through the existing Codex socket.
-4. Eligible notifications use fixed templates and the existing ntfy topic.
-   Delivery receipts and deduplication records persist across consumer restarts.
+4. Only a fresh, complete snapshot with `goal === "blocked"` is eligible for
+   notification. The alert uses the existing ntfy topic; delivery receipts and
+   deduplication records persist across consumer restarts.
 
-Ordinary root stops have a 45-second continuation grace. Approval signals use
-runtime flags where available, with an explicit unverified notice if current
-state cannot be read. Urgent revalidation has a three-second budget and at most
-four concurrent RPC calls. Unverified reminders do not consume their allowance.
-Reminder deadlines trigger reads even without an initial snapshot. Attempted
-reminders receive a persisted 20-second retry delay, leaving unchecked actors
-eligible for the next batch. Publishing still requires a fresh pending condition.
-Delivery pacing, retry deadlines, and a single reminder for a still-pending
-condition operate only on existing episodes. These deadlines do not discover
-additional sessions. `--once` drains hooks and awaits eligible dispatch.
+Ordinary root stops have a 45-second continuation grace while the engine waits
+for evidence; approval, input, failed-turn, and ordinary-stop episodes stay
+internal. Urgent revalidation has a three-second budget and at most four
+concurrent RPC calls. A blocked-goal reminder requires a fresh complete blocked
+snapshot. Reminder deadlines trigger reads even without an initial snapshot.
+Attempted reminders receive a persisted 20-second retry delay, leaving unchecked
+actors eligible for the next batch. Publishing still requires a fresh pending
+blocked condition. Delivery pacing, retry deadlines, and a single reminder for
+a still-pending blocked condition operate only on existing episodes. These
+deadlines do not discover additional sessions. `--once` drains hooks and awaits
+eligible dispatch.
 
 ## Installation and limits
 
@@ -44,8 +46,8 @@ A missing hook can mean a missed condition: there is no periodic reconciliation
 fallback. Existing sessions become covered when they emit a trusted hook.
 Optional async input without a corresponding installed hook/runtime flag,
 opaque hangs, sleeping hosts, and external host-death detection are not covered.
-An ordinary completed turn can produce a generic review notice because no model
-infers completion. The HTTPS click URL opens ChatGPT, not a verified session link.
+Ordinary completed turns stay internal and do not publish. The HTTPS click URL
+opens ChatGPT, not a verified session link.
 
 See [README](../README.md#hook-driven-attention-monitor-v2) for commands and
 [acceptance evidence](watchdog-hooks-acceptance-2026-09-07.md) for verification.

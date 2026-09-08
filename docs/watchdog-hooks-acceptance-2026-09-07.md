@@ -32,10 +32,10 @@ periodically check sessions. Hook events and pending notification deadlines are
 the only sources of session reads. Optional async input-tool mapping, opaque
 hangs, sleeping hosts, and external host-death alerts remain uncovered.
 
-Ordinary completed turns can produce a generic review notice. Phone display
-and exact-session navigation remain unconfirmed. Hook-process burst latency
-exceeds the original design target; the tests report this without treating it
-as a delivery failure. No model calls are used for notification decisions.
+Ordinary completed turns stay internal and do not publish. Phone display and
+exact-session navigation remain unconfirmed. Hook-process burst latency exceeds
+the original design target; the tests report this without treating it as a
+delivery failure. No model calls are used for notification decisions.
 
 ## V1 removal verification
 
@@ -45,12 +45,10 @@ Final frozen dependency/type check after removing the unused V1 TOML parser:
 `b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/f2332b2f-e7ae-402a-a0ff-29c5e4afd6c4`.
 Both are actual executions on the canonical worktree, not cached results.
 
-Local `codex review --uncommitted` completed with two P2 reminder findings:
-a missing initial snapshot prevents recovery, and four repeatedly unreadable
-actors can starve later reminder checks. They are tracked in the removal PR;
-they are not fixed or verified. The review reproduced both cases with evidence
-`b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/29a9e4c7-f84b-4669-bcce-778a487f1689`.
-The final dependency-only removal was type-checked after review.
+The current implementation revalidates stop episodes before filtering and rotates
+failed reads. It also requires a fresh complete blocked snapshot for every post.
+The final local review round found one lower-severity issue for terminal
+non-blocked failures and tracked it in [issue #16](https://github.com/0x4007/codex-goal-supervisor/issues/16).
 
 ## Reminder recovery repair
 
@@ -65,13 +63,10 @@ four actors unreadable and exposes a pending approval on the fifth. It checks
 one verified reminder, exactly five reads, preserved failed-actor receipts and
 allowances, and persisted retry deadlines after shutdown, with no new hooks.
 
-Notification formatting uses the session title and readable status sentence
-only. Compact codes such as `S`, elapsed counters such as `45s`, and partial
-identity markers such as `*` are omitted.
+Notification formatting uses the session title and readable blocked-goal status
+sentence only. Compact codes such as `S`, elapsed counters such as `45s`, and
+partial identity markers such as `*` are omitted. Approval, input, failed-turn,
+ordinary-stop, and unreadable episodes do not publish.
 
-Repair validation: 21 passed, zero failed, fresh Mac execution:
-`b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/0f405b5b-c7b9-47ab-bacd-1351d8c60c91`.
-Local `codex review --uncommitted` exited 0 with no actionable bugs found.
-Review log: `~/.codex/attention-watchdog/reminder-recovery-review-2026-09-08.log`.
-The reviewer also executed both focused reminder tests successfully, reference
-`b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/afdbc367-a575-4ac0-af8f-509185ca9554`.
+Repair validation: 22 passed, zero failed, fresh Mac execution:
+`b82be93c6686276c58f7b90860a52f1ce7ac1d437a1d2c7156203e3f9c6261d7/9d2ddea2-7bd9-406b-8a82-9906ea61b68a`.
