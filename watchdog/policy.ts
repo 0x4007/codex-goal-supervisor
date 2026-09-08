@@ -50,6 +50,14 @@ export const templates: Record<Category, string> = {
   stop: "Turn stopped; completion was not established. Review session.",
   unverified: "Attention signal observed; current state could not be verified.",
 };
+export const notificationLabels: Record<Category, string> = {
+  approval: "Approval pending",
+  input: "Input requested",
+  failed: "Turn failed",
+  blocked: "Goal blocked",
+  stop: "Turn stopped",
+  unverified: "State unverified",
+};
 export const identifier = (x: unknown): x is string =>
   typeof x === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(x);
 export function capture(x: Record<string, unknown>, now = Date.now()): Event {

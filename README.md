@@ -249,6 +249,9 @@ attempts survive restart without blind retries; definite transient rejection
 gets at most two retries. One verified unresolved-condition reminder is allowed
 after ten minutes. Known send counts are not the ntfy account remaining quota.
 
+Notifications omit compact status codes, elapsed-second counters, and partial
+identity markers; each title is followed by a readable status sentence.
+
 This is a Mac/Linux prototype. Phone display and locating the exact session require
 user acceptance. The generic click URL opens ChatGPT; it is not a verified
 session deep link. Sleeping/offline Mac, remote workers, and opaque hangs have

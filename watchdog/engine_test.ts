@@ -144,10 +144,13 @@ Deno.test("digest uses session titles and never exposes session IDs", () => {
   const titles = Object.fromEntries(
     Object.keys(e.state.actors).map((id, i) => [id, `Task ${i}`]),
   );
-  const batch = digest(e.eligible(46000), "Mac", 46000, titles);
+  const batch = digest(e.eligible(46000), "Mac", titles);
   assert(batch.included.length === 100);
   assert(new TextEncoder().encode(batch.body).length <= 3072);
   assert(batch.body.includes("Task 0"));
+  assert(batch.body.includes("Task 0 — Turn stopped"));
+  assert(!batch.body.includes("S 45s"));
+  assert(!batch.body.includes("Request identity"));
   assert(!batch.body.includes("sameprefix"));
   assert(!batch.body.includes("Notice:"));
   assert(!batch.body.includes("secret"));
@@ -234,13 +237,16 @@ Deno.test("notification titles are bounded single lines with a readable fallback
   const e = new Engine(newState(1000));
   e.ingest(event("Stop", 1000));
   const episodes = e.eligible(46000), id = episodes[0].actor;
-  const batch = digest(episodes, "Mac", 46000, { [id]: "Fix\n\u202Ehooks" });
+  const batch = digest(episodes, "Mac", { [id]: "Fix\n\u202Ehooks" });
   assert(batch.body.includes("Fix hooks"));
   assert(!batch.body.includes("\u202E"));
-  const fallback = digest(episodes, "Mac", 46000, {});
+  assert(batch.body.includes("Fix hooks — Turn stopped"));
+  assert(!batch.body.includes("S 45s"));
+  assert(!batch.body.includes("Request identity"));
+  const fallback = digest(episodes, "Mac", {});
   assert(fallback.body.includes("Untitled session"));
   assert(!fallback.body.includes(id));
-  const long = digest(episodes, "Mac", 46000, { [id]: "界".repeat(5000) });
+  const long = digest(episodes, "Mac", { [id]: "界".repeat(5000) });
   assert(long.included.length === 1);
   assert(new TextEncoder().encode(long.body).length <= 3072);
 });
