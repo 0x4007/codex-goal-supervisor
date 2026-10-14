@@ -53,7 +53,8 @@ export type State = {
   successfulNotices?: Record<string, number>;
   history?: Record<
     string,
-    Pick<Episode, "delivery" | "receipt" | "sentAt" | "created" | "disposition">
+    Pick<Episode, "delivery" | "receipt" | "sentAt" | "created" | "disposition"> &
+      Partial<Pick<Episode, "actor" | "issue" | "kind">>
   >;
   losses: number;
   lastEvent: number;
@@ -89,6 +90,15 @@ export class Engine {
         p.sentAt!,
       );
     }
+    for (const [id, p] of Object.entries(state.history)) {
+      if (p.delivery !== "accepted" || !Number.isFinite(p.sentAt) ||
+        (p.kind !== undefined && p.kind !== "blocked")) continue;
+      const issue = p.issue ?? JSON.stringify([p.actor ?? id.split(":")[0], "blocked", null]);
+      p.issue = issue;
+      state.successfulNotices[issue] = Math.max(
+        state.successfulNotices[issue] ?? 0, p.sentAt!,
+      );
+    }
   }
   issueKey(
     actor: string,
@@ -97,7 +107,7 @@ export class Engine {
     return JSON.stringify([actor, "blocked", goalKey ?? null]);
   }
   canNotify(p: Episode, now: number) {
-    const issue = this.issueKey(p.actor);
+    const issue = p.issue ?? this.issueKey(p.actor);
     // Old state has no goal identity. Bind its successful notice once, when the
     // existing blocked goal is freshly observed; recovery never clears it.
     const unknown = JSON.stringify([p.actor, "blocked", null]);
@@ -112,6 +122,9 @@ export class Engine {
       for (const legacy of Object.values(this.state.episodes)) {
         if (legacy.issue === unknown) legacy.issue = issue;
       }
+      for (const legacy of Object.values(this.state.history!)) {
+        if (legacy.issue === unknown) legacy.issue = issue;
+      }
     }
     p.issue = issue;
     let sentAt = this.state.successfulNotices![issue];
@@ -121,7 +134,20 @@ export class Engine {
         if (key.startsWith(prefix)) sentAt = Math.max(sentAt ?? at, at);
       }
     }
-    return sentAt === undefined || now - sentAt >= NOTIFICATION_COOLDOWN;
+    if (sentAt !== undefined && now - sentAt < NOTIFICATION_COOLDOWN) {
+      p.retryAt = Math.max(p.retryAt, sentAt + NOTIFICATION_COOLDOWN);
+      return false;
+    }
+    return true;
+  }
+  deliveryMembers(episodes: Episode[]) {
+    return Object.values(this.state.episodes).filter((alias) =>
+      ["candidate", "attention"].includes(alias.disposition) &&
+      alias.kind === "blocked" && episodes.some((p) =>
+        alias.actor === p.actor && (alias.issue === p.issue ||
+          (!alias.issue && alias.turn === p.turn))
+      )
+    );
   }
   delivered(p: Episode, result: DeliveryResult, now: number) {
     p.delivery = result.state;
@@ -278,7 +304,10 @@ export class Engine {
       (s.terminal === "failed" || s.goal === "blocked")
     ) {
       const kind = s.terminal === "failed" ? "failed" : "blocked";
-      this.add(
+      const issue = this.issueKey(a.id, s.goalKey);
+      const existing = this.forActor(a.id).some((p) => p.turn === s.turn &&
+        !["approval", "input"].includes(p.kind) && (!p.issue || p.issue === issue));
+      if (!existing) this.add(
         a.id,
         s.turn,
         kind,
@@ -327,7 +356,15 @@ export class Engine {
         stopped && s.complete &&
         (s.terminal === "failed" || s.goal === "blocked")
       ) {
+        if (p.issue === JSON.stringify([a.id, "blocked", null]) && p.delivery === "pending") {
+          p.issue = this.issueKey(a.id, s.goalKey);
+        }
+        if (p.issue && p.issue !== this.issueKey(a.id, s.goalKey)) {
+          this.resolve(p);
+          continue;
+        }
         p.kind = s.terminal === "failed" ? "failed" : "blocked";
+        if (p.kind === "blocked") p.issue ??= this.issueKey(a.id, s.goalKey);
         p.disposition = "attention";
         p.due = now;
       }
@@ -358,6 +395,7 @@ export class Engine {
       if (p.disposition !== "attention" || now < p.due || now < p.retryAt) {
         return false;
       }
+      if (p.kind === "blocked" && !this.canNotify(p, now)) return false;
       if (
         p.delivery === "accepted" && !p.reminded &&
         now >= (p.sentAt ?? now) + NOTIFICATION_COOLDOWN
@@ -408,13 +446,16 @@ export class Engine {
       if (now - p.created <= 7 * 86400000 && (!pressure || count < 3584)) {
         continue;
       }
-      const { delivery, receipt, sentAt, created, disposition } = p;
+      const { delivery, receipt, sentAt, created, disposition, actor, issue, kind } = p;
       this.state.history![p.id] = {
         delivery,
         receipt,
         sentAt,
         created,
         disposition,
+        actor,
+        issue,
+        kind,
       };
       delete this.state.episodes[p.id];
       count--;

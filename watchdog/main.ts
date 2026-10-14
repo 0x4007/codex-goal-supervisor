@@ -367,7 +367,7 @@ export async function main() {
         ) {
           // Failed or non-blocked reads must rotate out of the head of the
           // queue. This does not consume a notification allowance.
-          p.retryAt = Date.now() + 20000;
+          p.retryAt = Math.max(p.retryAt, Date.now() + 20000);
         }
       }
       const notification = crypto.randomUUID();
@@ -382,7 +382,7 @@ export async function main() {
         await save();
         return;
       }
-      const members = batch.included.map((p) => state.episodes[p.id]);
+      const members = engine.deliveryMembers(batch.included.map((p) => state.episodes[p.id]));
       let topic: string;
       try {
         topic =
