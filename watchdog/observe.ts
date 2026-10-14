@@ -1,6 +1,13 @@
 import WebSocket from "ws";
 import type { Snapshot } from "./policy.ts";
 type Row = Record<string, any>;
+export async function goalIdentity(goal: Row | null | undefined) {
+  if (typeof goal?.id === "string" && goal.id) return `id:${goal.id}`;
+  const created = goal?.createdAt ?? goal?.created_at;
+  return typeof created === "string" || typeof created === "number"
+    ? `created:${created}`
+    : undefined;
+}
 // This transport has no method for steering or resuming a session.
 export class Observer {
   socket?: WebSocket;
@@ -141,6 +148,7 @@ export class Observer {
       flags: t.status?.activeFlags ?? [],
       terminal: turn?.status ?? null,
       goal: goal?.status ?? null,
+      goalKey: await goalIdentity(goal),
       parent: t.parentThreadId ?? null,
       at: Date.now(),
       complete: complete && typeof t.status?.type === "string",

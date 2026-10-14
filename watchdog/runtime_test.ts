@@ -530,7 +530,7 @@ Deno.test("non-blocked reminders retain their receipt and do not publish", async
     p.disposition = "attention";
     p.delivery = "accepted";
     p.receipt = `original-${i}`;
-    p.sentAt = now - 610000;
+    p.sentAt = now - 6 * 3600000 - 10000;
   }
   await Deno.mkdir(join(home, "attention-watchdog"));
   await Deno.mkdir(join(home, ".config/codex-nudge"), { recursive: true });
@@ -610,17 +610,23 @@ Deno.test("blocked reminders recover missing snapshots and bypass failed actors 
   });
   const { Engine, newState } = await import("./engine.ts");
   const now = Date.now(),
-    state = newState(now - 700000),
+    state = newState(now - 6 * 3600000 - 90000),
     engine = new Engine(state);
   // All five initial blocked-goal notices were accepted during an outage, without snapshots.
   for (let i = 0; i < 5; i++) {
     const id = `actor-${i}`;
     engine.actor(id, now);
-    const p = engine.add(id, "turn", "blocked", "stop:turn", now - 650000)!;
+    const p = engine.add(
+      id,
+      "turn",
+      "blocked",
+      "stop:turn",
+      now - 6 * 3600000 - 50000,
+    )!;
     p.disposition = "attention";
     p.delivery = "accepted";
     p.receipt = `original-${i}`;
-    p.sentAt = now - 610000;
+    p.sentAt = now - 6 * 3600000 - 10000;
   }
   await Deno.mkdir(join(home, "attention-watchdog"));
   await Deno.mkdir(join(home, ".config/codex-nudge"), { recursive: true });

@@ -31,6 +31,7 @@ export type Snapshot = {
   flags: string[];
   terminal: string | null;
   goal: string | null;
+  goalKey?: string;
   parent: string | null;
   at: number;
   complete: boolean;
