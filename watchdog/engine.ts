@@ -1,4 +1,10 @@
 import { type Category, type Event, type Snapshot, VERSION } from "./policy.ts";
+export const NOTIFICATION_COOLDOWN = 6 * 60 * 60 * 1000;
+export type DeliveryResult = {
+  state: Episode["delivery"];
+  receipt?: string;
+  retryAt?: number;
+};
 export type Episode = {
   id: string;
   actor: string;
@@ -13,12 +19,14 @@ export type Episode = {
     | "attention"
     | "resolved"
     | "completion"
-    | "interrupt";
+    | "interrupt"
+    | "expired";
   delivery: "pending" | "dispatching" | "accepted" | "rejected" | "uncertain";
   attempts: number;
   retryAt: number;
   receipt?: string;
   sentAt?: number;
+  issue?: string;
   reminded?: boolean;
   reminder?: boolean;
   request: string | null;
@@ -42,6 +50,7 @@ export type State = {
   episodes: Record<string, Episode>;
   seen: Record<string, number>;
   posts: number[];
+  successfulNotices?: Record<string, number>;
   history?: Record<
     string,
     Pick<Episode, "delivery" | "receipt" | "sentAt" | "created" | "disposition">
@@ -68,6 +77,63 @@ export function newState(now: number): State {
 export class Engine {
   constructor(readonly state: State) {
     state.history ??= {};
+    state.successfulNotices ??= {};
+    for (const p of Object.values(state.episodes)) {
+      if (
+        p.kind !== "blocked" || p.delivery !== "accepted" ||
+        !Number.isFinite(p.sentAt)
+      ) continue;
+      p.issue ??= this.issueKey(p.actor);
+      state.successfulNotices[p.issue] = Math.max(
+        state.successfulNotices[p.issue] ?? 0,
+        p.sentAt!,
+      );
+    }
+  }
+  issueKey(
+    actor: string,
+    goalKey = this.state.actors[actor]?.snapshot?.goalKey,
+  ) {
+    return JSON.stringify([actor, "blocked", goalKey ?? null]);
+  }
+  canNotify(p: Episode, now: number) {
+    const issue = this.issueKey(p.actor);
+    // Old state has no goal identity. Bind its successful notice once, when the
+    // existing blocked goal is freshly observed; recovery never clears it.
+    const unknown = JSON.stringify([p.actor, "blocked", null]);
+    if (
+      issue !== unknown && this.state.successfulNotices![unknown] !== undefined
+    ) {
+      this.state.successfulNotices![issue] = Math.max(
+        this.state.successfulNotices![issue] ?? 0,
+        this.state.successfulNotices![unknown],
+      );
+      delete this.state.successfulNotices![unknown];
+      for (const legacy of Object.values(this.state.episodes)) {
+        if (legacy.issue === unknown) legacy.issue = issue;
+      }
+    }
+    p.issue = issue;
+    let sentAt = this.state.successfulNotices![issue];
+    if (issue === unknown) {
+      const prefix = `[${JSON.stringify(p.actor)},"blocked",`;
+      for (const [key, at] of Object.entries(this.state.successfulNotices!)) {
+        if (key.startsWith(prefix)) sentAt = Math.max(sentAt ?? at, at);
+      }
+    }
+    return sentAt === undefined || now - sentAt >= NOTIFICATION_COOLDOWN;
+  }
+  delivered(p: Episode, result: DeliveryResult, now: number) {
+    p.delivery = result.state;
+    p.receipt = result.receipt;
+    if (result.state === "accepted") {
+      p.sentAt = now;
+      p.issue ??= this.issueKey(p.actor);
+      this.state.successfulNotices![p.issue] = now;
+    }
+    p.retryAt = result.state === "accepted"
+      ? 0
+      : result.retryAt ?? Number.MAX_SAFE_INTEGER;
   }
   actor(id: string, _now: number): Actor | undefined {
     if (this.state.actors[id]) return this.state.actors[id];
@@ -212,7 +278,13 @@ export class Engine {
       (s.terminal === "failed" || s.goal === "blocked")
     ) {
       const kind = s.terminal === "failed" ? "failed" : "blocked";
-      this.add(a.id, s.turn, kind, `stop:${s.turn ?? "unknown"}`, now);
+      this.add(
+        a.id,
+        s.turn,
+        kind,
+        `stop:${s.turn ?? "unknown"}${s.goalKey ? `:${s.goalKey}` : ""}`,
+        now,
+      );
     }
     for (const p of this.forActor(a.id)) {
       p.revision++;
@@ -288,7 +360,7 @@ export class Engine {
       }
       if (
         p.delivery === "accepted" && !p.reminded &&
-        now >= (p.sentAt ?? now) + 600000
+        now >= (p.sentAt ?? now) + NOTIFICATION_COOLDOWN
       ) {
         return true;
       }
@@ -298,6 +370,23 @@ export class Engine {
     }).sort((a, b) => a.due - b.due);
   }
   compact(now: number) {
+    for (const p of Object.values(this.state.episodes)) {
+      if (
+        ["candidate", "attention"].includes(p.disposition) &&
+        now - p.created > 3 * 86400000
+      ) {
+        p.disposition = "expired";
+        p.revision++;
+      }
+    }
+    for (
+      const [issue, sentAt] of Object.entries(this.state.successfulNotices!)
+    ) {
+      if (now - sentAt > 7 * 86400000) {
+        delete this.state
+          .successfulNotices![issue];
+      }
+    }
     this.reclaim(now, false);
     const seen = Object.entries(this.state.seen).sort((a, b) => b[1] - a[1]);
     this.state.seen = Object.fromEntries(seen.slice(0, 8192));

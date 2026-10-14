@@ -221,6 +221,7 @@ export async function main() {
     dispatching = false,
     stopping = false;
   let lastTick = Date.now(),
+    lastGapLog = 0,
     lastPost = 0;
   const startMono = performance.now();
   const jobs = new Set<Promise<unknown>>();
@@ -334,6 +335,7 @@ export async function main() {
       );
       // Unreadable current state cannot prove a blocked goal. Do not mutate the
       // original category: it is needed for later resolution.
+      const issues = new Set<string>();
       const presented = current.map((p) => ({
         ...p,
         kind: !state.actors[p.actor]?.snapshot?.complete ||
@@ -344,7 +346,15 @@ export async function main() {
       })).filter((p) => {
         if (!isNotifiable(p)) return false;
         const snapshot = state.actors[p.actor]?.snapshot;
-        return p.kind !== "unverified" && snapshot?.goal === "blocked";
+        if (p.kind === "unverified" || snapshot?.goal !== "blocked") {
+          return false;
+        }
+        const member = state.episodes[p.id];
+        if (
+          !engine.canNotify(member, Date.now()) || issues.has(member.issue!)
+        ) return false;
+        issues.add(member.issue!);
+        return true;
       });
       // Only attempted actors move their deadline. Unchecked actors retain
       // priority, so failed reads cannot monopolize the four RPC slots. Persist
@@ -417,12 +427,7 @@ export async function main() {
       });
       const result = await publish(topic, batch.body);
       for (const p of members) {
-        p.delivery = result.state;
-        p.receipt = result.receipt;
-        p.sentAt = Date.now();
-        p.retryAt = result.state === "accepted"
-          ? 0
-          : result.retryAt ?? Number.MAX_SAFE_INTEGER;
+        engine.delivered(p, result, Date.now());
       }
       state.deliveryHealth = result.state === "accepted"
         ? undefined
@@ -453,7 +458,10 @@ export async function main() {
         for (const a of Object.values(state.actors)) {
           if (a.snapshot) a.snapshot.complete = false;
         }
-        log("observation_gap");
+        if (now - lastGapLog > 5 * 60000) {
+          lastGapLog = now;
+          log("observation_gap");
+        }
       }
       lastTick = now;
       await drain();
