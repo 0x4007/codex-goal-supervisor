@@ -143,8 +143,13 @@ if (Deno.build.os === "darwin") {
     { mode: 0o600 },
   );
 } else {
-  const systemdQuote = (value: string) =>
+  // ExecStart undergoes systemd variable expansion, so literal $ must be $$
+  // and literal % must be %%. Environment= values are passed verbatim to the
+  // process environment; systemd does not expand them, so $ must NOT be doubled.
+  const systemdExecQuote = (value: string) =>
     JSON.stringify(value.replaceAll("%", "%%").replaceAll("$", "$$"));
+  const systemdEnvQuote = (value: string) =>
+    JSON.stringify(value.replaceAll("%", "%%"));
   const unit = [
     "[Unit]",
     "Description=Codex hook attention notifications",
@@ -152,9 +157,9 @@ if (Deno.build.os === "darwin") {
     "[Service]",
     "Type=simple",
     "WorkingDirectory=" + release.replaceAll("%", "%%"),
-    "ExecStart=" + args.map(systemdQuote).join(" "),
-    "Environment=" + systemdQuote("HOME=" + user),
-    "Environment=" + systemdQuote("CODEX_HOME=" + home),
+    "ExecStart=" + args.map(systemdExecQuote).join(" "),
+    "Environment=" + systemdEnvQuote("HOME=" + user),
+    "Environment=" + systemdEnvQuote("CODEX_HOME=" + home),
     "Restart=always",
     "RestartSec=5",
     "TimeoutStopSec=15",
